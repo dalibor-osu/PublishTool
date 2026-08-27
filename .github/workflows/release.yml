@@ -13,9 +13,18 @@ on:
           - major
         default: auto
       prerelease:
-        description: "Mark the GitHub release as a pre-release"
-        type: boolean
-        default: false
+        description: "Pre-release channel (none = a normal release)"
+        type: choice
+        options:
+          - none
+          - rc
+          - beta
+          - alpha
+        default: none
+      version:
+        description: "Exact version, overriding bump/prerelease (e.g. 1.4.0 or 1.4.0-rc.3)"
+        type: string
+        default: ""
       dry_run:
         description: "Build everything, but do not tag or publish a release"
         type: boolean
@@ -42,7 +51,8 @@ jobs:
     outputs:
       version: ${{ steps.semver.outputs.version }}
       tag: ${{ steps.semver.outputs.tag }}
-      previous_tag: ${{ steps.semver.outputs.previous_tag }}
+      notes_start: ${{ steps.semver.outputs.notes_start }}
+      prerelease: ${{ steps.semver.outputs.prerelease }}
       bump: ${{ steps.semver.outputs.bump }}
     steps:
       - uses: actions/checkout@v4
@@ -55,47 +65,75 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Latest stable release tag (vMAJOR.MINOR.PATCH); pre-release tags are ignored.
+          custom="${{ inputs.version }}"
+          channel="${{ inputs.prerelease }}"
+
+          # Latest stable release tag (vMAJOR.MINOR.PATCH); pre-release tags are ignored,
+          # so an rc series always bumps from the last real release.
           previous="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -v -- '-' | head -n1 || true)"
+          # Changelog starts at the most recent tag of any kind, so rc.2 lists only what rc.1 missed.
+          notes_start="$(git tag --list 'v[0-9]*' --sort=-v:refname --sort=-creatordate | head -n1 || true)"
 
-          if [ -n "$previous" ]; then
-            range="$previous..HEAD"
-          else
-            range=""
-          fi
-
-          bump="${{ inputs.bump }}"
-          if [ "$bump" = "auto" ]; then
-            # shellcheck disable=SC2086
-            subjects="$(git log --no-merges --format=%s $range)"
-            # shellcheck disable=SC2086
-            bodies="$(git log --no-merges --format=%b $range)"
-
-            if printf '%s\n' "$subjects" | grep -qE '^[a-zA-Z]+(\([^)]*\))?!:' \
-               || printf '%s\n' "$bodies" | grep -qE '^BREAKING[ -]CHANGE:'; then
-              bump=major
-            elif printf '%s\n' "$subjects" | grep -qE '^feat(\([^)]*\))?:'; then
-              bump=minor
-            else
-              bump=patch
+          if [ -n "$custom" ]; then
+            version="${custom#v}"
+            if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+              echo "::error::'${custom}' is not a valid semantic version (expected X.Y.Z or X.Y.Z-suffix)."
+              exit 1
             fi
-            echo "Derived bump from Conventional Commits: $bump"
+            bump="custom"
+            echo "Using the version given as input; bump and prerelease inputs are ignored."
+          else
+            bump="${{ inputs.bump }}"
+            if [ "$bump" = "auto" ]; then
+              if [ -n "$previous" ]; then
+                range="$previous..HEAD"
+              else
+                range=""
+              fi
+              # shellcheck disable=SC2086
+              subjects="$(git log --no-merges --format=%s $range)"
+              # shellcheck disable=SC2086
+              bodies="$(git log --no-merges --format=%b $range)"
+
+              if printf '%s\n' "$subjects" | grep -qE '^[a-zA-Z]+(\([^)]*\))?!:' \
+                 || printf '%s\n' "$bodies" | grep -qE '^BREAKING[ -]CHANGE:'; then
+                bump=major
+              elif printf '%s\n' "$subjects" | grep -qE '^feat(\([^)]*\))?:'; then
+                bump=minor
+              else
+                bump=patch
+              fi
+              echo "Derived bump from Conventional Commits: $bump"
+            fi
+
+            if [ -z "$previous" ]; then
+              case "$bump" in
+                major) base="1.0.0" ;;
+                *)     base="0.1.0" ;;
+              esac
+            else
+              IFS='.' read -r major minor patch <<< "${previous#v}"
+              case "$bump" in
+                major) major=$((major + 1)); minor=0; patch=0 ;;
+                minor) minor=$((minor + 1)); patch=0 ;;
+                patch) patch=$((patch + 1)) ;;
+              esac
+              base="${major}.${minor}.${patch}"
+            fi
+
+            if [ "$channel" = "none" ]; then
+              version="$base"
+            else
+              # Continue the numbering of any existing pre-releases for this exact base version.
+              last="$(git tag --list "v${base}-${channel}.*" | sed 's/.*\.//' | grep -E '^[0-9]+$' | sort -n | tail -n1 || true)"
+              version="${base}-${channel}.$(( ${last:-0} + 1 ))"
+            fi
           fi
 
-          if [ -z "$previous" ]; then
-            case "$bump" in
-              major) version="1.0.0" ;;
-              *)     version="0.1.0" ;;
-            esac
-          else
-            IFS='.' read -r major minor patch <<< "${previous#v}"
-            case "$bump" in
-              major) major=$((major + 1)); minor=0; patch=0 ;;
-              minor) minor=$((minor + 1)); patch=0 ;;
-              patch) patch=$((patch + 1)) ;;
-            esac
-            version="${major}.${minor}.${patch}"
-          fi
+          case "$version" in
+            *-*) prerelease=true ;;
+            *)   prerelease=false ;;
+          esac
 
           tag="v${version}"
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
@@ -106,7 +144,8 @@ jobs:
           {
             echo "version=${version}"
             echo "tag=${tag}"
-            echo "previous_tag=${previous}"
+            echo "notes_start=${notes_start}"
+            echo "prerelease=${prerelease}"
             echo "bump=${bump}"
           } >> "$GITHUB_OUTPUT"
 
@@ -115,9 +154,11 @@ jobs:
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| Previous tag | ${previous:-none} |"
+            echo "| Last stable tag | ${previous:-none} |"
+            echo "| Changelog since | ${notes_start:-start of history} |"
             echo "| Bump | ${bump} |"
             echo "| New version | ${version} |"
+            echo "| Pre-release | ${prerelease} |"
             echo "| Dry run | ${{ inputs.dry_run }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -244,15 +285,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.version.outputs.tag }}
-          PREVIOUS: ${{ needs.version.outputs.previous_tag }}
-          PRERELEASE: ${{ inputs.prerelease }}
+          NOTES_START: ${{ needs.version.outputs.notes_start }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           set -euo pipefail
           args=(release create "$TAG" --title "$TAG" --generate-notes)
-          if [ -n "$PREVIOUS" ]; then
-            args+=(--notes-start-tag "$PREVIOUS")
+          if [ -n "$NOTES_START" ]; then
+            args+=(--notes-start-tag "$NOTES_START")
           fi
           if [ "$PRERELEASE" = "true" ]; then
-            args+=(--prerelease)
+            args+=(--prerelease --latest=false)
           fi
           gh "${args[@]}" dist/*
