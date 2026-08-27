@@ -7,6 +7,9 @@
     <Nullable>enable</Nullable>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <Version>0.0.0</Version>
+    <Product>PublishTool</Product>
+    <StripSymbols Condition="'$(RuntimeIdentifier)' != '' And !$(RuntimeIdentifier.StartsWith('win'))">true</StripSymbols>
   </PropertyGroup>
 
   <ItemGroup>

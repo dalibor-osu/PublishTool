@@ -1,0 +1,258 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (auto = derive from Conventional Commits since last tag)"
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+        default: auto
+      prerelease:
+        description: "Mark the GitHub release as a pre-release"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Build everything, but do not tag or publish a release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  DOTNET_VERSION: "10.0.x"
+  PROJECT: PublishTool/PublishTool.csproj
+  APP_NAME: PublishTool
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.semver.outputs.version }}
+      tag: ${{ steps.semver.outputs.tag }}
+      previous_tag: ${{ steps.semver.outputs.previous_tag }}
+      bump: ${{ steps.semver.outputs.bump }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history and tags are needed to find the last release
+
+      - name: Compute next semantic version
+        id: semver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Latest stable release tag (vMAJOR.MINOR.PATCH); pre-release tags are ignored.
+          previous="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -v -- '-' | head -n1 || true)"
+
+          if [ -n "$previous" ]; then
+            range="$previous..HEAD"
+          else
+            range=""
+          fi
+
+          bump="${{ inputs.bump }}"
+          if [ "$bump" = "auto" ]; then
+            # shellcheck disable=SC2086
+            subjects="$(git log --no-merges --format=%s $range)"
+            # shellcheck disable=SC2086
+            bodies="$(git log --no-merges --format=%b $range)"
+
+            if printf '%s\n' "$subjects" | grep -qE '^[a-zA-Z]+(\([^)]*\))?!:' \
+               || printf '%s\n' "$bodies" | grep -qE '^BREAKING[ -]CHANGE:'; then
+              bump=major
+            elif printf '%s\n' "$subjects" | grep -qE '^feat(\([^)]*\))?:'; then
+              bump=minor
+            else
+              bump=patch
+            fi
+            echo "Derived bump from Conventional Commits: $bump"
+          fi
+
+          if [ -z "$previous" ]; then
+            case "$bump" in
+              major) version="1.0.0" ;;
+              *)     version="0.1.0" ;;
+            esac
+          else
+            IFS='.' read -r major minor patch <<< "${previous#v}"
+            case "$bump" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+            esac
+            version="${major}.${minor}.${patch}"
+          fi
+
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::Tag ${tag} already exists."
+            exit 1
+          fi
+
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "previous_tag=${previous}"
+            echo "bump=${bump}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Release ${tag}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Previous tag | ${previous:-none} |"
+            echo "| Bump | ${bump} |"
+            echo "| New version | ${version} |"
+            echo "| Dry run | ${{ inputs.dry_run }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build ${{ matrix.rid }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+          - rid: win-arm64
+            os: windows-11-arm
+          - rid: linux-x64
+            os: ubuntu-latest
+          - rid: linux-arm64
+            os: ubuntu-24.04-arm
+          - rid: osx-x64
+            os: macos-latest
+          - rid: osx-arm64
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install native toolchain
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish Native AOT
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet publish "$PROJECT" \
+            --configuration Release \
+            --runtime ${{ matrix.rid }} \
+            --self-contained true \
+            -p:PublishAot=true \
+            -p:Version=${{ needs.version.outputs.version }} \
+            --output "artifacts/${{ matrix.rid }}"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "$env:APP_NAME-${{ needs.version.outputs.tag }}-${{ matrix.rid }}"
+          New-Item -ItemType Directory -Path "package/$name" | Out-Null
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Copy-Item "artifacts/${{ matrix.rid }}/$env:APP_NAME.exe" "package/$name/"
+          Copy-Item LICENSE "package/$name/"
+          Compress-Archive -Path "package/$name" -DestinationPath "dist/$name.zip"
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Out-File -Encoding ascii "dist/$name.zip.sha256"
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="${APP_NAME}-${{ needs.version.outputs.tag }}-${{ matrix.rid }}"
+          mkdir -p "package/${name}" dist
+          cp "artifacts/${{ matrix.rid }}/${APP_NAME}" "package/${name}/"
+          cp LICENSE "package/${name}/"
+          chmod +x "package/${name}/${APP_NAME}"
+          tar -czf "dist/${name}.tar.gz" -C package "${name}"
+          if command -v sha256sum > /dev/null; then
+            (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          else
+            (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.rid }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Tag and publish
+    needs: [version, build]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Collect checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat dist/*.sha256 > SHA256SUMS.txt
+          rm -f dist/*.sha256
+          mv SHA256SUMS.txt dist/
+          ls -l dist
+
+      - name: Create tag
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PREVIOUS: ${{ needs.version.outputs.previous_tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          args=(release create "$TAG" --title "$TAG" --generate-notes)
+          if [ -n "$PREVIOUS" ]; then
+            args+=(--notes-start-tag "$PREVIOUS")
+          fi
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}" dist/*
