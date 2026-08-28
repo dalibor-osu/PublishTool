@@ -1,6 +1,6 @@
 namespace PublishTool;
 
-public class PublishCommand(DotnetProject project, string configuration, string publishDir)
+public class PublishCommandBuilder(DotnetProject project, string configuration, string publishDir)
 {
     public DotnetProject Project { get; } = project;
     public string Configuration { get; } = configuration;
