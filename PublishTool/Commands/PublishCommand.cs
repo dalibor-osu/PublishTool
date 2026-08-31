@@ -112,5 +112,16 @@ public class PublishCommand(PublishCommand.Options options) : Command<PublishCom
         return hasError ? 1 : 0;
     }
 
-    private static Task<bool> CheckMsBuild() => ProcessHelper.RunAsync("MSBuild", "/version").ContinueWith(t => t.Result.ExitCode == 0);
+    private static async Task<bool> CheckMsBuild()
+    {
+        try
+        {
+            return await ProcessHelper.RunAsync("MSBuild", "/version").ContinueWith(t => t.Result.ExitCode == 0);
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(e.ToString());
+            return false;
+        }
+    }
 }
