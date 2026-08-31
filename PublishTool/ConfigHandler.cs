@@ -5,59 +5,59 @@ namespace PublishTool;
 
 public static class ConfigHandler
 {
-    public static Config Instance => _instance ?? throw new InvalidOperationException("Config not loaded!");
     private static string ConfigDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PublishTool");
 
-    private static Config? _instance;
-
-    public static void Load(string workingDir)
+    public static Config Load(string workingDir, bool forceUpdate = false)
     {
         string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PublishTool", "config.json");
+        var result = new Config();
         if (File.Exists(path))
         {
             string json = File.ReadAllText(path);
-            _instance = JsonSerializer.Deserialize<Config>(json, JsonContext.Default.Config) ??
-                        throw new InvalidOperationException("Failed to deserialize config file!");
-        }
-        else
-        {
-            _instance = new Config();
+            result = JsonSerializer.Deserialize<Config>(json, JsonContext.Default.Config) ??
+                   throw new InvalidOperationException("Failed to deserialize config file!");
         }
 
-        HandleDirConfig(workingDir);
+        HandleDirConfig(workingDir, result, forceUpdate);
+        return result;
     }
 
-    private static void HandleDirConfig(string path)
+    private static void HandleDirConfig(string path, Config config, bool forceUpdate)
     {
-        bool needsUpdate = !Instance.PublishDirectories.ContainsKey(path) || !Instance.IgnoredDirectories.ContainsKey(path) ||
-                           !Instance.PublishableProjects.ContainsKey(path);
+        bool needsUpdate = !config.PublishDirectories.ContainsKey(path) || !config.IgnoredDirectories.ContainsKey(path) ||
+                           !config.PublishableProjects.ContainsKey(path) || forceUpdate;
         if (needsUpdate)
         {
             AnsiConsole.Write(new FigletText("PublishTool"));
-            AnsiConsole.WriteLine($"We need to setup some basic configurations for this directory first. ({path})");
+            AnsiConsole.WriteLine(forceUpdate
+                ? $"Editing config for directory ({path})"
+                : $"We need to setup some basic configurations for this directory first. ({path})");
         }
 
-        if (!Instance.PublishDirectories.ContainsKey(path))
+        if (!config.PublishDirectories.ContainsKey(path) || forceUpdate)
         {
-            string publishPath = AnsiConsole.Ask<string>("Enter publish directory path");
-            Instance.PublishDirectories[path] = publishPath;
+            string publishPath = AnsiConsole.Ask("Enter publish directory path", config.PublishDirectories.GetValueOrDefault(path, string.Empty));
+            config.PublishDirectories[path] = publishPath;
             needsUpdate = true;
+            AnsiConsole.Clear();
         }
 
-        if (!Instance.IgnoredDirectories.ContainsKey(path))
+        if (!config.IgnoredDirectories.ContainsKey(path) || forceUpdate)
         {
             string[] ignoredDirs = AnsiConsole
-                .Ask<string>(
-                    "Enter [green]directories[/] that will be ignored when scanning for projects in this directory (comma separated):")
+                .Ask(
+                    "Enter [green]directories[/] that will be ignored when scanning for projects in this directory (comma separated):",
+                    string.Join(", ", config.IgnoredDirectories.GetValueOrDefault(path, [])))
                 .Split(',')
                 .Select(s => s.Trim()).ToArray();
-            Instance.IgnoredDirectories[path] = ignoredDirs;
+            config.IgnoredDirectories[path] = ignoredDirs;
             needsUpdate = true;
+            AnsiConsole.Clear();
         }
 
-        if (!Instance.PublishableProjects.ContainsKey(path))
+        if (!config.PublishableProjects.ContainsKey(path) || forceUpdate)
         {
-            var allProjects = ProjectScanner.Scan(path, true);
+            var allProjects = ProjectScanner.Scan(config, path, true);
             if (allProjects.Count == 0)
             {
                 AnsiConsole.MarkupLine("No projects found in this directory.");
@@ -65,26 +65,33 @@ public static class ConfigHandler
                 return;
             }
 
-            string[] selectedProjects = AnsiConsole.Prompt(
-                new MultiSelectionPrompt<string>()
-                    .Title("Select [green]projects[/] that will be available to publish from this directory:")
-                    .AddChoices(allProjects.Select(p => p.Name))).ToArray();
+            var prompt = new MultiSelectionPrompt<string>()
+                .Title("Select [green]projects[/] that will be available to publish from this directory:")
+                .AddChoices(allProjects.Select(p => p.Name));
+            if (forceUpdate && config.PublishableProjects.TryGetValue(path, out string[]? preselectedProjects))
+            {
+                foreach (string preselectedProject in preselectedProjects)
+                {
+                    prompt.Select(preselectedProject);
+                }
+            }
+
+            string[] selectedProjects = AnsiConsole.Prompt(prompt).ToArray();
 
             var finalProjects = allProjects.Where(p => selectedProjects.Contains(p.Name)).ToArray();
-            Instance.PublishableProjects[path] = finalProjects.Select(p => p.Name).ToArray();
+            config.PublishableProjects[path] = finalProjects.Select(p => p.Name).ToArray();
             needsUpdate = true;
+            AnsiConsole.Clear();
         }
 
 
         if (needsUpdate)
         {
-            Save();
+            Save(config);
         }
-
-        AnsiConsole.Clear();
     }
 
-    private static void Save()
+    private static void Save(Config config)
     {
         if (!Directory.Exists(ConfigDir))
         {
@@ -92,7 +99,7 @@ public static class ConfigHandler
         }
 
         string path = Path.Combine(ConfigDir, "config.json");
-        string json = JsonSerializer.Serialize(_instance, JsonContext.Default.Config);
+        string json = JsonSerializer.Serialize(config, JsonContext.Default.Config);
         File.WriteAllText(path, json);
     }
 }

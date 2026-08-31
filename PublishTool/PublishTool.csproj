@@ -7,13 +7,32 @@
     <Nullable>enable</Nullable>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.0.0</Version>
     <Product>PublishTool</Product>
     <StripSymbols Condition="'$(RuntimeIdentifier)' != '' And !$(RuntimeIdentifier.StartsWith('win'))">true</StripSymbols>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(BuildVersion)' != ''">
+    <Version>$(BuildVersion)</Version>
+  </PropertyGroup>
+
   <ItemGroup>
-    <PackageReference Include="Spectre.Console" Version="0.57.3-alpha.0.7"/>
+    <PackageReference Include="Spectre.Console" Version="0.57.2"/>
   </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Extensions\" />
+  </ItemGroup>
+
+  <Target Name="GenBuildInfo" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <BuildInfoFile>$(IntermediateOutputPath)BuildInfo.g.cs</BuildInfoFile>
+      <BuildVersion Condition="'$(BuildVersion)' == ''">dev</BuildVersion>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(BuildInfoFile)" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Lines="internal static class BuildInfo { public const string Version = &quot;$(BuildVersion)&quot;%3B }"/>
+    <ItemGroup>
+      <Compile Include="$(BuildInfoFile)"/>
+    </ItemGroup>
+  </Target>
 
 </Project>
