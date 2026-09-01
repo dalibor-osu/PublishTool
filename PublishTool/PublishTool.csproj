@@ -19,10 +19,6 @@
     <PackageReference Include="Spectre.Console" Version="0.57.2"/>
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Extensions\" />
-  </ItemGroup>
-
   <Target Name="GenBuildInfo" BeforeTargets="CoreCompile">
     <PropertyGroup>
       <BuildInfoFile>$(IntermediateOutputPath)BuildInfo.g.cs</BuildInfoFile>

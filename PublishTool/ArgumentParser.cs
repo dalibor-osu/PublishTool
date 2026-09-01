@@ -17,6 +17,7 @@ public static class ArgumentParser
             "publish" => ParsePublishCommand(args),
             "version" => new VersionCommand(new VersionCommand.Options()),
             "config" => ParseConfigCommand(args),
+            "update" => ParseUpdateCommand(args),
             _ => ParsePublishCommand(args)
         };
     }
@@ -58,7 +59,7 @@ public static class ArgumentParser
     private static Result<ICommand> ParseConfigCommand(string[] args)
     {
         var options = new ConfigCommand.Options();
-        for (int i = args[0] == "config" ? 1 : 0; i < args.Length; i++)
+        for (int i = 1; i < args.Length; i++)
         {
             switch (args[i])
             {
@@ -84,5 +85,35 @@ public static class ArgumentParser
         }
 
         return new ConfigCommand(options);
+    }
+
+    private static Result<ICommand> ParseUpdateCommand(string[] args)
+    {
+        var options = new UpdateCommand.Options();
+        for (int i = 1; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "-v":
+                case "--version":
+                    if (i + 1 >= args.Length)
+                    {
+                        return $"Missing version after {args[i]}";
+                    }
+
+                    options.Version = args[i++ + 1];
+                    continue;
+                case "-pre":
+                    options.PreRelease = true;
+                    continue;
+                case "--fetch":
+                    options.Fetch = true;
+                    continue;
+                default:
+                    return $"Unknown argument: {args[i]}";
+            }
+        }
+
+        return new UpdateCommand(options);
     }
 }
