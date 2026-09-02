@@ -202,7 +202,7 @@ jobs:
             --runtime ${{ matrix.rid }} \
             --self-contained true \
             -p:PublishAot=true \
-            -p:Version=${{ needs.version.outputs.version }} \
+            -p:BuildVersion=${{ needs.version.outputs.version }} \
             --output "artifacts/${{ matrix.rid }}"
 
       - name: Package (Windows)

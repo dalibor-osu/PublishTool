@@ -61,7 +61,7 @@ if (commandResult.Value.UsesAlternateScreen)
 }
 else
 {
-    await commandAction();
+    returnCode = await commandAction();
 }
 
 Logger.Write();

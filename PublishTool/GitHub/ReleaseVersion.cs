@@ -109,7 +109,7 @@ public partial record ReleaseVersion : IComparable<ReleaseVersion>
             .GetString() ?? string.Empty;
     }
 
-    [GeneratedRegex(@"^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:-rc\.(?<rc>\d+))?$")]
+    [GeneratedRegex(@"^v?(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:-rc\.(?<rc>\d+))?$")]
     private static partial Regex TagNameRegex();
 
     public static bool operator >(ReleaseVersion left, ReleaseVersion right) => left.CompareTo(right) > 0;
@@ -171,5 +171,5 @@ public partial record ReleaseVersion : IComparable<ReleaseVersion>
         return RcNumber!.Value.CompareTo(other.RcNumber!.Value);
     }
 
-    public override string ToString() => TagName;
+    public override string ToString() => $"v{TagName}";
 }
