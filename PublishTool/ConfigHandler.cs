@@ -15,7 +15,7 @@ public static class ConfigHandler
         {
             string json = File.ReadAllText(path);
             result = JsonSerializer.Deserialize<Config>(json, JsonContext.Default.Config) ??
-                   throw new InvalidOperationException("Failed to deserialize config file!");
+                     throw new InvalidOperationException("Failed to deserialize config file!");
         }
 
         HandleDirConfig(workingDir, result, forceUpdate);

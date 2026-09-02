@@ -1,0 +1,27 @@
+{{~ func option_label(option)
+      ret (option.Aliases | array.join ", ") + (option.Kind != "Flag" ? " <" + option.ValueName + ">" : "")
+    end ~}}
+{{~ width = 0
+    for option in Command.Options
+      label = option_label option
+      if label.size > width
+        width = label.size
+      end
+    end ~}}
+Usage: PublishTool {{ Command.Name }}{{ if Command.Options.size > 0 }} [options]{{ end }}
+{{~ if Command.Description ~}}
+
+{{ Command.Description }}
+{{~ end ~}}
+{{~ if Command.Options.size > 0 ~}}
+
+Options:
+{{~ for option in Command.Options ~}}
+{{~ label = option_label option ~}}
+{{~ if option.Description ~}}
+  {{ label | string.pad_right width }}  {{ option.Description }}
+{{~ else ~}}
+  {{ label }}
+{{~ end ~}}
+{{~ end ~}}
+{{~ end ~}}

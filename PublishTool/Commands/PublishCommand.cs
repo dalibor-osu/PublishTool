@@ -1,20 +1,19 @@
+using PublishTool.Attributes;
+using PublishTool.Commands.Options;
 using PublishTool.Console;
 using PublishTool.Helpers;
 using Spectre.Console;
 
 namespace PublishTool.Commands;
 
-public class PublishCommand(PublishCommand.Options options) : Command<PublishCommand.Options>(options)
+[Command("publish", IsDefault = true, Description = "Publish the projects in a directory")]
+public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCommandOptions>
 {
-    public new class Options
-    {
-        public string WorkingDirectory { get; set; } = Directory.GetCurrentDirectory();
-        public bool All { get; set; } = false;
-    }
+    public PublishCommandOptions Options { get; } = options;
 
-    public override bool UsesAlternateScreen => true;
+    public bool UsesAlternateScreen => true;
 
-    public override async Task<int> ExecuteAsync(CancellationToken ct)
+    public async Task<int> ExecuteAsync(CancellationToken ct)
     {
         if (!await CheckMsBuild())
         {
@@ -23,7 +22,7 @@ public class PublishCommand(PublishCommand.Options options) : Command<PublishCom
             return 1;
         }
 
-        string currentWorkingDirectory = base.Options.WorkingDirectory;
+        string currentWorkingDirectory = Options.WorkingDirectory;
         var config = ConfigHandler.Load(currentWorkingDirectory);
         var projects = ProjectScanner.Scan(config, currentWorkingDirectory);
 
@@ -34,7 +33,7 @@ public class PublishCommand(PublishCommand.Options options) : Command<PublishCom
         }
 
 
-        var selectedProjects = base.Options.All
+        var selectedProjects = Options.All
             ? projects.Select(p => p.Name)
             : await AnsiConsole.PromptAsync(
                 new MultiSelectionPrompt<string>()
@@ -43,7 +42,7 @@ public class PublishCommand(PublishCommand.Options options) : Command<PublishCom
 
         var projectsToPublish = projects.Where(p => selectedProjects.Any(sp => p.AbsolutePath.EndsWith($"{sp}.csproj"))).ToList();
 
-        string configuration = base.Options.All
+        string configuration = Options.All
             ? "Release"
             : await AnsiConsole.PromptAsync(
                 new SelectionPrompt<string>()

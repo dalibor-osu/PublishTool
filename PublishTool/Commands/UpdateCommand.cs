@@ -1,5 +1,7 @@
 using System.Formats.Tar;
 using System.IO.Compression;
+using PublishTool.Attributes;
+using PublishTool.Commands.Options;
 using PublishTool.Extensions;
 using PublishTool.GitHub;
 using PublishTool.Helpers;
@@ -7,19 +9,15 @@ using Spectre.Console;
 
 namespace PublishTool.Commands;
 
-public class UpdateCommand(UpdateCommand.Options options) : Command<UpdateCommand.Options>(options)
+[Command("update", Description = "Update PublishTool to the latest published release")]
+public class UpdateCommand(UpdateCommandOptions options) : ICommand<UpdateCommandOptions>
 {
     private const string ExecutableName = "PublishTool";
     private const string BackupSuffix = ".old";
 
-    public new class Options
-    {
-        public string? Version { get; set; }
-        public bool PreRelease { get; set; } = false;
-        public bool Fetch { get; set; } = false;
-    }
+    public UpdateCommandOptions Options { get; } = options;
 
-    public override bool UsesAlternateScreen => false;
+    public bool UsesAlternateScreen => false;
 
     public static void CleanUpBackup()
     {
@@ -45,23 +43,23 @@ public class UpdateCommand(UpdateCommand.Options options) : Command<UpdateComman
     }
 
 
-    public override async Task<int> ExecuteAsync(CancellationToken ct)
+    public async Task<int> ExecuteAsync(CancellationToken ct)
     {
         var client = new GitHubClient();
         var currentVersion = ReleaseVersion.Current;
-        string preRelease = base.Options.PreRelease ? "pre-release" : "full";
+        string preRelease = Options.PreRelease ? "pre-release" : "full";
 
-        if (currentVersion?.IsPreRelease == true && !base.Options.PreRelease)
+        if (currentVersion?.IsPreRelease == true && !Options.PreRelease)
         {
             preRelease = await AnsiConsole.ConfirmAsync(
                 "You are currently running a pre-release version. Do you want to fetch the latest pre-release version?", cancellationToken: ct)
                 ? "pre-release"
                 : "full";
-            base.Options.PreRelease = true;
+            Options.PreRelease = true;
         }
 
         AnsiConsole.WriteLine($"Fetching latest {preRelease} version...");
-        var result = base.Options.PreRelease ? await client.GetLatestVersionIncludingPreReleaseAsync(ct) : await client.GetLatestFullVersionAsync(ct);
+        var result = Options.PreRelease ? await client.GetLatestVersionIncludingPreReleaseAsync(ct) : await client.GetLatestFullVersionAsync(ct);
         if (!result.IsSuccess)
         {
             AnsiConsole.MarkupLine($"[red]Failed to fetch latest {preRelease} version:[/] {result.Error}");
@@ -70,7 +68,7 @@ public class UpdateCommand(UpdateCommand.Options options) : Command<UpdateComman
 
         var latestVersion = result.Value;
 
-        if (base.Options.Fetch)
+        if (Options.Fetch)
         {
             AnsiConsole.WriteLine($"Latest {preRelease} version: {latestVersion} (Current: {currentVersion?.ToString() ?? BuildInfo.Version})");
             return 0;
@@ -162,7 +160,7 @@ public class UpdateCommand(UpdateCommand.Options options) : Command<UpdateComman
 
             if (archive.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
             {
-                ZipFile.ExtractToDirectory(archive.FullName, targetDirectory, overwriteFiles: true);
+                ZipFile.ExtractToDirectory(archive.FullName, targetDirectory, true);
                 return true;
             }
 
@@ -170,7 +168,7 @@ public class UpdateCommand(UpdateCommand.Options options) : Command<UpdateComman
             {
                 using var archiveStream = archive.OpenRead();
                 using var decompressed = new GZipStream(archiveStream, CompressionMode.Decompress);
-                TarFile.ExtractToDirectory(decompressed, targetDirectory, overwriteFiles: true);
+                TarFile.ExtractToDirectory(decompressed, targetDirectory, true);
                 return true;
             }
 
@@ -267,7 +265,7 @@ public class UpdateCommand(UpdateCommand.Options options) : Command<UpdateComman
         {
             if (Directory.Exists(directory))
             {
-                Directory.Delete(directory, recursive: true);
+                Directory.Delete(directory, true);
             }
         }
         catch (Exception e)

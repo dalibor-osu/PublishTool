@@ -1,13 +1,16 @@
+using PublishTool.Attributes;
+using PublishTool.Commands.Options;
+
 namespace PublishTool.Commands;
 
-public class VersionCommand(VersionCommand.Options options) : Command<VersionCommand.Options>(options)
+[Command("version", Description = "Print the version of this tool")]
+public class VersionCommand(VersionCommandOptions options) : ICommand<VersionCommandOptions>
 {
-    public new class Options
-    { }
+    public VersionCommandOptions Options { get; } = options;
 
-    public override bool UsesAlternateScreen => false;
+    public bool UsesAlternateScreen => false;
 
-    public override Task<int> ExecuteAsync(CancellationToken ct)
+    public Task<int> ExecuteAsync(CancellationToken ct)
     {
         System.Console.WriteLine($"PublishTool version {BuildInfo.Version}"); // Seems to be faster than AnsiConsole
         return Task.FromResult(0);

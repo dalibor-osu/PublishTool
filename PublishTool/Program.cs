@@ -1,5 +1,6 @@
 ﻿using PublishTool;
 using PublishTool.Commands;
+using PublishTool.Generated;
 using Spectre.Console;
 
 using var ct = new CancellationTokenSource();
@@ -17,10 +18,11 @@ Console.CancelKeyPress += (_, e) =>
 UpdateCommand.CleanUpBackup();
 
 int returnCode = 0;
-var commandResult = ArgumentParser.Parse(args);
+var commandResult = CommandParsers.Parse(args);
 if (!commandResult.IsSuccess)
 {
     AnsiConsole.MarkupLine($"[red]An error occurred when running the command:[/] {commandResult.Error}");
+    Logger.Write();
     return 1;
 }
 
