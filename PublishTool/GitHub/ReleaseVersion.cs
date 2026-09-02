@@ -44,15 +44,15 @@ public partial record ReleaseVersion : IComparable<ReleaseVersion>
 
     private ReleaseVersion(string tagName)
     {
-        Id = 0;
-        TagName = tagName;
-        Name = tagName;
-
         var match = TagNameRegex().Match(tagName);
         if (!match.Success)
         {
-            throw new FormatException($"'{tagName}' is not a valid release tag (expected vMAJOR.MINOR.PATCH[-rc.N])");
+            throw new FormatException($"'{tagName}' is not a valid release tag (expected [v]MAJOR.MINOR.PATCH[-rc.N])");
         }
+
+        Id = 0;
+        TagName = tagName.StartsWith('v') ? tagName : $"v{tagName}";
+        Name = TagName;
 
         Major = uint.Parse(match.Groups["major"].ValueSpan);
         Minor = uint.Parse(match.Groups["minor"].ValueSpan);
@@ -66,29 +66,11 @@ public partial record ReleaseVersion : IComparable<ReleaseVersion>
         }
     }
 
-    private ReleaseVersion(long id, string name, string tagName, JsonElement? json)
+    private ReleaseVersion(long id, string name, string tagName, JsonElement? json) : this(tagName)
     {
         Id = id;
         Name = name;
-        TagName = tagName;
         Json = json;
-
-        var match = TagNameRegex().Match(tagName);
-        if (!match.Success)
-        {
-            throw new FormatException($"'{tagName}' is not a valid release tag (expected vMAJOR.MINOR.PATCH[-rc.N])");
-        }
-
-        Major = uint.Parse(match.Groups["major"].ValueSpan);
-        Minor = uint.Parse(match.Groups["minor"].ValueSpan);
-        Patch = uint.Parse(match.Groups["patch"].ValueSpan);
-
-        var rc = match.Groups["rc"];
-        if (rc.Success)
-        {
-            RcNumber = uint.Parse(rc.ValueSpan);
-            IsPreRelease = true;
-        }
     }
 
     public string GetDownloadUrl()
@@ -171,5 +153,5 @@ public partial record ReleaseVersion : IComparable<ReleaseVersion>
         return RcNumber!.Value.CompareTo(other.RcNumber!.Value);
     }
 
-    public override string ToString() => TagName.StartsWith('v') ? $"{TagName}" : $"v{TagName}";
+    public override string ToString() => TagName;
 }
