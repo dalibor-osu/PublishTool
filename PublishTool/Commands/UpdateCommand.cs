@@ -57,6 +57,7 @@ public class UpdateCommand(UpdateCommand.Options options) : Command<UpdateComman
                 "You are currently running a pre-release version. Do you want to fetch the latest pre-release version?", cancellationToken: ct)
                 ? "pre-release"
                 : "full";
+            base.Options.PreRelease = true;
         }
 
         AnsiConsole.WriteLine($"Fetching latest {preRelease} version...");
@@ -71,7 +72,7 @@ public class UpdateCommand(UpdateCommand.Options options) : Command<UpdateComman
 
         if (base.Options.Fetch)
         {
-            AnsiConsole.WriteLine($"Latest {preRelease} version: {latestVersion} (Current: {BuildInfo.Version})");
+            AnsiConsole.WriteLine($"Latest {preRelease} version: {latestVersion} (Current: {currentVersion})");
             return 0;
         }
 

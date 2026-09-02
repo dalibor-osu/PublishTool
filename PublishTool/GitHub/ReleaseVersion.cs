@@ -171,5 +171,5 @@ public partial record ReleaseVersion : IComparable<ReleaseVersion>
         return RcNumber!.Value.CompareTo(other.RcNumber!.Value);
     }
 
-    public override string ToString() => $"v{TagName}";
+    public override string ToString() => TagName.StartsWith('v') ? $"{TagName}" : $"v{TagName}";
 }
