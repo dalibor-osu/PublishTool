@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using PublishTool.Extensions;
+using PublishTool.Helpers;
 
 namespace PublishTool.GitHub;
 
@@ -17,6 +18,8 @@ public partial record ReleaseVersion : IComparable<ReleaseVersion>
     public uint? RcNumber { get; }
 
     public JsonElement? Json { get; }
+
+    public static readonly ReleaseVersion? Current = EnvironmentHelper.IsDevVersion ? null : new ReleaseVersion(BuildInfo.Version);
 
     public static Result<ReleaseVersion> Parse(JsonElement element)
     {
@@ -36,6 +39,30 @@ public partial record ReleaseVersion : IComparable<ReleaseVersion>
         {
             Logger.LogError(e.ToString());
             return "Failed to parse version";
+        }
+    }
+
+    private ReleaseVersion(string tagName)
+    {
+        Id = 0;
+        TagName = tagName;
+        Name = tagName;
+
+        var match = TagNameRegex().Match(tagName);
+        if (!match.Success)
+        {
+            throw new FormatException($"'{tagName}' is not a valid release tag (expected vMAJOR.MINOR.PATCH[-rc.N])");
+        }
+
+        Major = uint.Parse(match.Groups["major"].ValueSpan);
+        Minor = uint.Parse(match.Groups["minor"].ValueSpan);
+        Patch = uint.Parse(match.Groups["patch"].ValueSpan);
+
+        var rc = match.Groups["rc"];
+        if (rc.Success)
+        {
+            RcNumber = uint.Parse(rc.ValueSpan);
+            IsPreRelease = true;
         }
     }
 
@@ -62,6 +89,24 @@ public partial record ReleaseVersion : IComparable<ReleaseVersion>
             RcNumber = uint.Parse(rc.ValueSpan);
             IsPreRelease = true;
         }
+    }
+
+    public string GetDownloadUrl()
+    {
+        var assets = Json?.GetProperty("assets");
+        if (assets?.ValueKind != JsonValueKind.Array)
+        {
+            return string.Empty;
+        }
+
+        string identifier =
+            $"{EnvironmentHelper.GetCurrentOsShortcut()}-{EnvironmentHelper.GetCurrentArchitecture()}.{EnvironmentHelper.GetPlatformArchiveExtension()}";
+
+        return assets.Value.EnumerateArray()
+            .Cast<JsonElement?>()
+            .FirstOrDefault(e => e?.GetProperty("name").GetString()?.EndsWith(identifier) ?? false, null)?
+            .GetProperty("browser_download_url")
+            .GetString() ?? string.Empty;
     }
 
     [GeneratedRegex(@"^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:-rc\.(?<rc>\d+))?$")]

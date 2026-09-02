@@ -25,6 +25,7 @@ public class GitHubClient
             {
                 return "No full release found";
             }
+
             response.EnsureSuccessStatusCode();
             string json = await response.Content.ReadAsStringAsync(ct);
             var jsonRoot = JsonDocument.Parse(json).RootElement;
@@ -71,6 +72,34 @@ public class GitHubClient
         {
             Logger.LogError(e.ToString());
             return "An error occurred while fetching the latest version";
+        }
+    }
+
+    public async Task<Result<FileInfo>> DownloadAssetAsync(string url, string targetDirectory, CancellationToken ct)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+            response.EnsureSuccessStatusCode();
+
+            Directory.CreateDirectory(targetDirectory);
+            string fileName = Path.GetFileName(new Uri(url).LocalPath);
+            string targetPath = Path.Combine(targetDirectory, fileName);
+
+            await using var source = await response.Content.ReadAsStreamAsync(ct);
+            await using var target = File.Create(targetPath);
+            await source.CopyToAsync(target, ct);
+
+            return new FileInfo(targetPath);
+        }
+        catch (TaskCanceledException)
+        {
+            return string.Empty;
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(e.ToString());
+            return "An error occurred while downloading the asset";
         }
     }
 }

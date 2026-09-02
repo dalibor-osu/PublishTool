@@ -14,6 +14,8 @@ Console.CancelKeyPress += (_, e) =>
     e.Cancel = true;
 };
 
+UpdateCommand.CleanUpBackup();
+
 int returnCode = 0;
 var commandResult = ArgumentParser.Parse(args);
 if (!commandResult.IsSuccess)
