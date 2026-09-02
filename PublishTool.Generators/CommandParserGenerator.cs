@@ -125,14 +125,26 @@ public sealed class CommandParserGenerator : IIncrementalGenerator
                 continue;
             }
 
+            bool reserved = false;
             foreach (string alias in aliases)
             {
+                if (Emitter.HelpAliases.Contains(alias))
+                {
+                    diagnostics.Add(new DiagnosticInfo(Diagnostics.ReservedAlias, location, property.Name, alias));
+                    reserved = true;
+                }
+
                 if (seenAliases.TryGetValue(alias, out string? owner) && owner != property.Name)
                 {
                     diagnostics.Add(new DiagnosticInfo(Diagnostics.DuplicateAlias, location, alias, commandName));
                 }
 
                 seenAliases[alias] = property.Name;
+            }
+
+            if (reserved)
+            {
+                continue;
             }
 
             string? valueName = null;

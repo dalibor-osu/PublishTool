@@ -15,9 +15,13 @@ namespace PublishTool.Generators;
 internal static class Emitter
 {
     private const string ResultType = "global::PublishTool.Result<global::PublishTool.Commands.ICommand>";
+    private const string HelpCommandType = "global::PublishTool.Commands.HelpCommand";
+
+    public static readonly string[] HelpAliases = ["-h", "--help"];
 
     private static readonly Lazy<Template> ParsersTemplate = new(() => Load("CommandParsers.sbncs"));
     private static readonly Lazy<Template> HelpTemplate = new(() => Load("Help.sbncs"));
+    private static readonly Lazy<Template> ApplicationHelpTemplate = new(() => Load("ApplicationHelp.sbncs"));
 
     public static string Emit(ImmutableArray<CommandModel> commands)
     {
@@ -31,11 +35,16 @@ internal static class Emitter
             view.Help = Render(HelpTemplate.Value, globals => globals["Command"] = view).TrimEnd();
         }
 
+        string applicationHelp = Render(ApplicationHelpTemplate.Value, globals => globals["Commands"] = views).TrimEnd();
+
         return Render(ParsersTemplate.Value, globals =>
         {
             globals["ResultType"] = ResultType;
+            globals["HelpCommandType"] = HelpCommandType;
+            globals["HelpAliases"] = HelpAliases;
             globals["Commands"] = views;
             globals["DefaultCommand"] = views.FirstOrDefault(view => view.IsDefault);
+            globals["ApplicationHelp"] = applicationHelp;
         });
     }
 
@@ -122,26 +131,46 @@ internal static class Emitter
         public List<OptionView> Options { get; private set; } = new();
         public string Help { get; set; } = string.Empty;
 
-        public static CommandView From(CommandModel model) => new()
+        public bool HasDeclaredOptions => Options.Any(option => option.Kind != OptionView.HelpKind);
+
+        public static CommandView From(CommandModel model)
         {
-            Name = model.CommandName,
-            MethodSuffix = model.MethodSuffix,
-            CommandTypeName = model.CommandTypeName,
-            OptionsTypeName = model.OptionsTypeName,
-            Description = model.Description,
-            IsDefault = model.IsDefault,
-            Options = model.Options.Select(OptionView.From).ToList()
-        };
+            var options = model.Options.Select(OptionView.From).ToList();
+            options.Add(OptionView.Help);
+
+            return new CommandView
+            {
+                Name = model.CommandName,
+                MethodSuffix = model.MethodSuffix,
+                CommandTypeName = model.CommandTypeName,
+                OptionsTypeName = model.OptionsTypeName,
+                Description = model.Description,
+                IsDefault = model.IsDefault,
+                Options = options
+            };
+        }
     }
 
     private sealed class OptionView
     {
+        public const string HelpKind = "Help";
+
         public string PropertyName { get; private set; } = string.Empty;
         public string Kind { get; private set; } = string.Empty;
         public string ValueName { get; private set; } = string.Empty;
         public string? Description { get; private set; }
         public string? ParserMethod { get; private set; }
         public List<string> Aliases { get; private set; } = new();
+
+        public bool TakesValue => Kind != OptionKind.Flag.ToString() && Kind != HelpKind;
+
+        public static OptionView Help => new()
+        {
+            PropertyName = HelpKind,
+            Kind = HelpKind,
+            Description = "Print this help",
+            Aliases = HelpAliases.ToList()
+        };
 
         public static OptionView From(OptionModel model) => new()
         {

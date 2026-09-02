@@ -5,11 +5,10 @@ namespace PublishTool.Commands.Options;
 
 public class PublishCommandOptions
 {
-    [Option("-dir", Parser = nameof(ParseWorkingDirectory), ValueName = "working dir path",
-        Description = "Directory to scan for projects")]
+    [Option("-dir", Parser = nameof(ParseWorkingDirectory), ValueName = "working dir path", Description = "Directory to scan for projects")]
     public string WorkingDirectory { get; set; } = Directory.GetCurrentDirectory();
 
-    [Option("-a", Description = "Publish every project without asking")]
+    [Option("-a", Description = "Publish every project in Release configuration without asking")]
     public bool All { get; set; } = false;
 
     internal static bool ParseWorkingDirectory(string value, PublishCommandOptions options, out string? error)

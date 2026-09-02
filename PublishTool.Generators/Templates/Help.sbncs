@@ -1,5 +1,5 @@
 {{~ func option_label(option)
-      ret (option.Aliases | array.join ", ") + (option.Kind != "Flag" ? " <" + option.ValueName + ">" : "")
+      ret (option.Aliases | array.join ", ") + (option.TakesValue ? " <" + option.ValueName + ">" : "")
     end ~}}
 {{~ width = 0
     for option in Command.Options
@@ -8,12 +8,15 @@
         width = label.size
       end
     end ~}}
-Usage: PublishTool {{ Command.Name }}{{ if Command.Options.size > 0 }} [options]{{ end }}
+Usage: PublishTool {{ Command.Name }} [options]
 {{~ if Command.Description ~}}
 
 {{ Command.Description }}
 {{~ end ~}}
-{{~ if Command.Options.size > 0 ~}}
+{{~ if Command.IsDefault ~}}
+
+This is the default command, it also runs when no command is given.
+{{~ end ~}}
 
 Options:
 {{~ for option in Command.Options ~}}
@@ -22,6 +25,5 @@ Options:
   {{ label | string.pad_right width }}  {{ option.Description }}
 {{~ else ~}}
   {{ label }}
-{{~ end ~}}
 {{~ end ~}}
 {{~ end ~}}

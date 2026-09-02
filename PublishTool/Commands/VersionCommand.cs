@@ -3,7 +3,7 @@ using PublishTool.Commands.Options;
 
 namespace PublishTool.Commands;
 
-[Command("version", Description = "Print the version of this tool")]
+[Command("version", Description = "Print the version of PublishTool")]
 public class VersionCommand(VersionCommandOptions options) : ICommand<VersionCommandOptions>
 {
     public VersionCommandOptions Options { get; } = options;

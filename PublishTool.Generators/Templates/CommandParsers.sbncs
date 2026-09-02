@@ -9,6 +9,10 @@ internal static class CommandParsers
     {
         switch (args.Length > 0 ? args[0] : string.Empty)
         {
+{{~ for alias in HelpAliases ~}}
+            case {{ literal alias }}:
+{{~ end ~}}
+                return new {{ HelpCommandType }}(ApplicationHelp);
 {{~ for command in Commands ~}}
             case {{ literal command.Name }}:
                 return Parse{{ command.MethodSuffix }}(args, 1);
@@ -26,18 +30,14 @@ internal static class CommandParsers
     // A default command means every argument list resolves to something
     internal static {{ ResultType }} Parse(string[] args) => TryParse(args)!;
 {{~ end ~}}
+
+    internal const string ApplicationHelp = {{ literal ApplicationHelp }};
 {{~ for command in Commands ~}}
 
     internal static {{ ResultType }} Parse{{ command.MethodSuffix }}(string[] args, int startIndex)
     {
         var options = new {{ command.OptionsTypeName }}();
-{{~ if command.Options.size == 0 ~}}
-
-        if (startIndex < args.Length)
-        {
-            return $"Unknown argument: {args[startIndex]}";
-        }
-{{~ else ~}}
+{{~ if command.HasDeclaredOptions ~}}
 
         for (int i = startIndex; i < args.Length; i++)
         {
@@ -47,6 +47,9 @@ internal static class CommandParsers
 {{~ for alias in option.Aliases ~}}
                 case {{ literal alias }}:
 {{~ end ~}}
+{{~ if option.Kind == "Help" ~}}
+                    return new {{ HelpCommandType }}({{ command.MethodSuffix }}Help);
+{{~ else ~}}
 {{~ if option.Kind == "Flag" ~}}
                     options.{{ option.PropertyName }} = true;
 {{~ else ~}}
@@ -74,9 +77,21 @@ internal static class CommandParsers
 {{~ end ~}}
                     continue;
 {{~ end ~}}
+{{~ end ~}}
                 default:
                     return $"Unknown argument: {args[i]}";
             }
+        }
+{{~ else ~}}
+
+        if (startIndex < args.Length)
+        {
+            if (args[startIndex] is {{ for alias in HelpAliases }}{{ literal alias }}{{ if !for.last }} or {{ end }}{{ end }})
+            {
+                return new {{ HelpCommandType }}({{ command.MethodSuffix }}Help);
+            }
+
+            return $"Unknown argument: {args[startIndex]}";
         }
 {{~ end ~}}
 

@@ -5,8 +5,7 @@ namespace PublishTool.Commands.Options;
 
 public class ConfigCommandOptions
 {
-    [Option("-dir", Parser = nameof(ParseWorkingDirectory), ValueName = "working dir path",
-        Description = "Directory the config belongs to")]
+    [Option("-dir", Parser = nameof(ParseWorkingDirectory), ValueName = "working dir path", Description = "Directory the config belongs to")]
     public string WorkingDirectory { get; set; } = Directory.GetCurrentDirectory();
 
     internal static bool ParseWorkingDirectory(string value, ConfigCommandOptions options, out string? error)

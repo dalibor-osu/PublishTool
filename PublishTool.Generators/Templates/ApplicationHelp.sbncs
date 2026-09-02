@@ -1,0 +1,17 @@
+{{~ width = 0
+    for command in Commands
+      if command.Name.size > width
+        width = command.Name.size
+      end
+    end ~}}
+Usage: PublishTool [command] [options]
+
+Commands:
+{{~ for command in Commands ~}}
+  {{ command.Name | string.pad_right width }}  {{ command.Description }}{{ if command.IsDefault }} (runs when no command is given){{ end }}
+{{~ end ~}}
+
+Options:
+  -h, --help  Print this help
+
+Run 'PublishTool <command> --help' for the options of a single command.

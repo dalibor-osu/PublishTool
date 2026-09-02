@@ -9,7 +9,7 @@ using Spectre.Console;
 
 namespace PublishTool.Commands;
 
-[Command("update", Description = "Update PublishTool to the latest published release")]
+[Command("update", Description = "Update PublishTool to the latest published or selected release")]
 public class UpdateCommand(UpdateCommandOptions options) : ICommand<UpdateCommandOptions>
 {
     private const string ExecutableName = "PublishTool";

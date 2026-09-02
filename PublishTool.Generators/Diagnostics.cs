@@ -47,6 +47,14 @@ internal static class Diagnostics
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor ReservedAlias = new(
+        "PT0008",
+        "Reserved option alias",
+        "Option '{0}' uses alias '{1}', which every command gets for printing help",
+        Category,
+        DiagnosticSeverity.Error,
+        true);
+
     public static readonly DiagnosticDescriptor TemplateFailure = new(
         "PT0006",
         "Parser template failed",
