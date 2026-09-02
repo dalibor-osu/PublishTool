@@ -11,6 +11,10 @@
     <StripSymbols Condition="'$(RuntimeIdentifier)' != '' And !$(RuntimeIdentifier.StartsWith('win'))">true</StripSymbols>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <AssemblyName>PublishTool-dev</AssemblyName>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(BuildVersion)' != ''">
     <Version>$(BuildVersion)</Version>
   </PropertyGroup>
