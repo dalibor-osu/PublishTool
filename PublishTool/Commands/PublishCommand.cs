@@ -3,15 +3,21 @@ using PublishTool.Commands.Options;
 using PublishTool.Console;
 using PublishTool.Helpers;
 using Spectre.Console;
+using Spectre.Console.Rendering;
 
 namespace PublishTool.Commands;
 
 [Command("publish", IsDefault = true, Description = "Publish the projects in a directory")]
 public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCommandOptions>
 {
+    private const int OutputTailLength = 5;
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(100);
+
     public PublishCommandOptions Options { get; } = options;
 
     public bool UsesAlternateScreen => true;
+
+    private volatile bool _hasError;
 
     public async Task<int> ExecuteAsync(CancellationToken ct)
     {
@@ -55,60 +61,107 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
             .Select(p => new PublishCommandBuilder(p, configuration,
                 Path.Combine(config.PublishDirectories[currentWorkingDirectory], p.Name))).ToList();
 
-        bool hasError = false;
-        await AnsiConsole.Progress()
-            .AutoRefresh(true)
-            .AutoClear(false)
-            .HideCompleted(false)
-            .Columns(
-                new SpinnerColumn(Spinner.Known.Ascii),
-                new ExpandingDescriptionColumn(13),
-                new ElapsedTimeColumn())
-            .StartAsync(async ctx =>
+        var display = new JobDisplay(OutputTailLength);
+        var buildRow = display.Add("Building projects and their dependencies");
+        var publishRows = publishCommands
+            .Select(c => (Command: c, Row: display.Add($"Publishing {c.Project.Name}")))
+            .ToList();
+
+        var work = PublishAll(projectsToPublish, configuration, buildRow, publishRows, ct);
+        AnsiConsole.Cursor.Hide();
+        try
+        {
+            // Redraw on a timer regardless of cancellation so the display keeps up until the very end.
+            while (await Task.WhenAny(work, Task.Delay(RefreshInterval)) != work)
             {
-                var work = publishCommands.Select(c => new
-                {
-                    Name = $"Publishing {c.Project.Name}",
-                    Job = new Func<Task<(int ExitCode, string Output, string Error)>>(() =>
-                        ProcessHelper.RunAsync("MSBuild", c.BuildCommand(), cancellationToken: ct))
-                });
+                Draw(display);
+            }
 
-                var running = work.Select(async item =>
-                {
-                    var task = ctx.AddTask(item.Name, new ProgressTaskSettings { AutoStart = true });
-                    task.IsIndeterminate = true;
+            await work;
+            display.Stop();
+            Draw(display);
+        }
+        finally
+        {
+            AnsiConsole.Cursor.Show();
+        }
 
-                    try
-                    {
-                        var result = await item.Job();
-                        if (result.ExitCode == 0)
-                        {
-                            task.Description = $"[green]{item.Name} - done[/]";
-                        }
-                        else
-                        {
-                            task.Description = $"[red]{item.Name} - failed[/]";
-                            Logger.LogError(string.Join('\n', result.Output, result.Error));
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        task.Description = $"[red]{item.Name} - failed: {ex.Message.EscapeMarkup()}[/]";
-                        hasError = true;
-                        Logger.LogError(ex.ToString());
-                    }
-                    finally
-                    {
-                        task.IsIndeterminate = false;
-                        task.Value = task.MaxValue;
-                        task.StopTask();
-                    }
-                });
+        return _hasError ? 1 : 0;
+    }
 
-                await Task.WhenAll(running);
-            });
+    private static readonly string Escape = ((char)27).ToString();
+    private static readonly ControlCode CursorHome = new(Escape + "[H");
+    private static readonly ControlCode EraseBelow = new(Escape + "[J");
 
-        return hasError ? 1 : 0;
+    private static void Draw(JobDisplay display)
+    {
+        AnsiConsole.Write(CursorHome);
+        AnsiConsole.Write(display);
+        AnsiConsole.Write(EraseBelow);
+    }
+
+    private async Task PublishAll(
+        IReadOnlyList<DotnetProject> projects,
+        string configuration,
+        JobRow buildRow,
+        List<(PublishCommandBuilder Command, JobRow Row)> publishRows,
+        CancellationToken ct)
+    {
+        bool built = await BuildDependencies(projects, configuration, buildRow, ct);
+        if (!built)
+        {
+            foreach (var (_, row) in publishRows)
+            {
+                row.Finish(ct.IsCancellationRequested ? JobState.Cancelled : JobState.Skipped, "build failed");
+            }
+
+            return;
+        }
+
+        await Task.WhenAll(publishRows.Select(item => RunMsBuild(item.Command.BuildCommand(), item.Row, ct)));
+    }
+
+    private async Task<bool> BuildDependencies(IReadOnlyList<DotnetProject> projects, string configuration, JobRow row, CancellationToken ct)
+    {
+        string traversalProject = DependencyBuild.WriteTraversalProject(projects, configuration);
+        try
+        {
+            return await RunMsBuild(DependencyBuild.BuildCommand(traversalProject), row, ct);
+        }
+        finally
+        {
+            DependencyBuild.TryDelete(traversalProject);
+        }
+    }
+
+    private async Task<bool> RunMsBuild(string arguments, JobRow row, CancellationToken ct)
+    {
+        row.Start();
+        try
+        {
+            var result = await ProcessHelper.RunAsync("MSBuild", arguments, onOutputLine: row.AppendLine, cancellationToken: ct);
+            if (result.ExitCode == 0)
+            {
+                row.Finish(JobState.Succeeded);
+                return true;
+            }
+
+            row.Finish(JobState.Failed);
+            _hasError = true;
+            Logger.LogError(string.Join('\n', result.Output, result.Error));
+        }
+        catch (OperationCanceledException)
+        {
+            row.Finish(JobState.Cancelled);
+        }
+        catch (Exception ex)
+        {
+            row.Finish(JobState.Failed, ex.Message);
+            _hasError = true;
+            Logger.LogError(ex.ToString());
+        }
+
+        return false;
     }
 
     private static async Task<bool> CheckMsBuild()

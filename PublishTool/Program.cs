@@ -38,7 +38,7 @@ var commandAction = async Task<int> () =>
     {
         return await commandResult.Value.ExecuteAsync(ct.Token);
     }
-    catch (TaskCanceledException)
+    catch (OperationCanceledException)
     {
         return ct.IsCancellationRequested ? 0 : 1;
     }
