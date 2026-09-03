@@ -21,7 +21,7 @@ internal sealed class JobRow(string name, int tailLength)
     private readonly Queue<string> _errorTail = new();
     private readonly Stopwatch _stopwatch = new();
 
-    public string Name { get; } = name;
+    public string Name { get; set; } = name;
     public JobState State { get; private set; } = JobState.Pending;
     public string? Detail { get; private set; }
     public TimeSpan Elapsed => _stopwatch.Elapsed;

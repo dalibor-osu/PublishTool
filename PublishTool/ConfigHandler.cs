@@ -42,6 +42,12 @@ public static class ConfigHandler
             AnsiConsole.Clear();
         }
 
+        if (forceUpdate)
+        {
+            AskDeployDirectory(path, config);
+            AnsiConsole.Clear();
+        }
+
         if (!config.IgnoredDirectories.ContainsKey(path) || forceUpdate)
         {
             string[] ignoredDirs = AnsiConsole
@@ -89,6 +95,28 @@ public static class ConfigHandler
         {
             Save(config);
         }
+    }
+
+    public static string EnsureDeployDirectory(Config config, string path)
+    {
+        if (config.DeployDirectories.TryGetValue(path, out string? existing) && !string.IsNullOrWhiteSpace(existing))
+        {
+            return existing;
+        }
+
+        AnsiConsole.WriteLine($"A deploy directory is needed for the complete publish. ({path})");
+        AskDeployDirectory(path, config);
+        Save(config);
+        AnsiConsole.Clear();
+        return config.DeployDirectories[path];
+    }
+
+    private static void AskDeployDirectory(string path, Config config)
+    {
+        string deployPath = AnsiConsole.Ask(
+            "Enter deploy directory path (time-stamped deploy directories are created in it)",
+            config.DeployDirectories.GetValueOrDefault(path, string.Empty));
+        config.DeployDirectories[path] = deployPath;
     }
 
     private static void Save(Config config)
