@@ -3,15 +3,16 @@ using PublishTool.Helpers;
 
 namespace PublishTool;
 
-public sealed class DeployPreparer(string deployRoot, string publishRoot, IReadOnlyList<string> projectNames)
+public sealed class DeployPreparer(string sharedRoot, string deployRoot, string publishRoot, IReadOnlyList<string> projectNames)
 {
-    public const string ChangesDirectoryName = "Deploy";
     private const string FallbackPrefix = "DEPLOY";
     private const string TimestampFormat = "yyyy-MM-dd_HH-mm-ss";
     private const int TimestampLength = 19;
     private const string UploadSuffix = ".uploading";
     private const int ReportEvery = 25;
+    private const string LegacyChangesDirectoryName = "Deploy";
 
+    public string SharedRoot { get; } = sharedRoot;
     public string DeployRoot { get; } = deployRoot;
 
     public static async Task<string> ResolvePrefixAsync(string workingDirectory, CancellationToken ct)
@@ -37,47 +38,15 @@ public sealed class DeployPreparer(string deployRoot, string publishRoot, IReadO
     public static string DirectoryName(string prefix, DateTimeOffset time) =>
         $"{prefix}_{time.ToString(TimestampFormat, CultureInfo.InvariantCulture)}";
 
-    public string TargetPath(string prefix, DateTimeOffset time) => Path.Combine(DeployRoot, DirectoryName(prefix, time));
+    public string DeployPath(string name) => Path.Combine(DeployRoot, name);
 
-    public static string CreateStagingDirectory()
-    {
-        string path = Path.Combine(Path.GetTempPath(), "PublishTool", $"deploy-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(path);
-        return path;
-    }
+    public string ReferencePath(string name) => Path.Combine(SharedRoot, name);
 
-    public int CopyPublishedProjects(string stage, Action<string> report, CancellationToken ct)
-    {
-        int total = 0;
-        foreach (string project in projectNames)
-        {
-            string source = Path.Combine(publishRoot, project);
-            if (!Directory.Exists(source))
-            {
-                throw new DirectoryNotFoundException($"Publish output of {project} was not found at {source}");
-            }
-
-            Directory.CreateDirectory(Path.Combine(stage, project));
-            int count = 0;
-            foreach (string file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
-            {
-                ct.ThrowIfCancellationRequested();
-                CopyFile(file, Path.Combine(stage, project, Path.GetRelativePath(source, file)));
-                count++;
-            }
-
-            report($"{project}: {count} files");
-            total += count;
-        }
-
-        return total;
-    }
-
-    public string? FindPreviousDeploy(string prefix)
+    public string? FindPreviousReference(string prefix)
     {
         string? best = null;
         DateTime bestTime = DateTime.MinValue;
-        foreach (string directory in Directory.EnumerateDirectories(DeployRoot))
+        foreach (string directory in Directory.EnumerateDirectories(SharedRoot))
         {
             if (TryParseName(Path.GetFileName(directory), out string candidatePrefix, out DateTime time)
                 && string.Equals(candidatePrefix, prefix, StringComparison.OrdinalIgnoreCase)
@@ -91,24 +60,24 @@ public sealed class DeployPreparer(string deployRoot, string publishRoot, IReadO
         return best;
     }
 
-    public int CollectChanges(string stage, string? previous, Action<string> report, CancellationToken ct)
+    public int CollectChanges(string deployDirectory, string? previous, Action<string> report, CancellationToken ct)
     {
-        string changesRoot = Path.Combine(stage, ChangesDirectoryName);
+        Directory.CreateDirectory(deployDirectory);
         int changed = 0;
         foreach (string project in projectNames)
         {
-            string current = Path.Combine(stage, project);
-            foreach (string file in Directory.EnumerateFiles(current, "*", SearchOption.AllDirectories))
+            string source = PublishedProjectDirectory(project);
+            foreach (string file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
             {
                 ct.ThrowIfCancellationRequested();
-                string relative = Path.GetRelativePath(current, file);
+                string relative = Path.GetRelativePath(source, file);
                 string? previousFile = previous is null ? null : Path.Combine(previous, project, relative);
                 if (previousFile is not null && File.Exists(previousFile) && FilesAreEqual(file, previousFile))
                 {
                     continue;
                 }
 
-                CopyFile(file, Path.Combine(changesRoot, project, relative));
+                CopyFile(file, Path.Combine(deployDirectory, project, relative));
                 changed++;
                 report(Path.Combine(project, relative));
             }
@@ -117,27 +86,27 @@ public sealed class DeployPreparer(string deployRoot, string publishRoot, IReadO
         return changed;
     }
 
-    public string Upload(string stage, string target, Action<string> report, CancellationToken ct)
+    public string Upload(string reference, Action<string> report, CancellationToken ct)
     {
-        string uploading = target + UploadSuffix;
+        string uploading = reference + UploadSuffix;
         if (Directory.Exists(uploading))
         {
             Directory.Delete(uploading, recursive: true);
         }
 
         Directory.CreateDirectory(uploading);
-        foreach (string directory in Directory.EnumerateDirectories(stage))
+        foreach (string project in projectNames)
         {
-            string name = Path.GetFileName(directory);
-            Directory.CreateDirectory(Path.Combine(uploading, name));
-            string[] files = Directory.GetFiles(directory, "*", SearchOption.AllDirectories);
+            string source = PublishedProjectDirectory(project);
+            Directory.CreateDirectory(Path.Combine(uploading, project));
+            string[] files = Directory.GetFiles(source, "*", SearchOption.AllDirectories);
             for (int i = 0; i < files.Length; i++)
             {
                 ct.ThrowIfCancellationRequested();
-                CopyFile(files[i], Path.Combine(uploading, name, Path.GetRelativePath(directory, files[i])));
+                CopyFile(files[i], Path.Combine(uploading, project, Path.GetRelativePath(source, files[i])));
                 if ((i + 1) % ReportEvery == 0 || i == files.Length - 1)
                 {
-                    report($"{name}: {i + 1}/{files.Length} files");
+                    report($"{project}: {i + 1}/{files.Length} files");
                 }
             }
         }
@@ -151,7 +120,7 @@ public sealed class DeployPreparer(string deployRoot, string publishRoot, IReadO
         foreach (string directory in Directory.EnumerateDirectories(previous))
         {
             string project = Path.GetFileName(directory);
-            if (string.Equals(project, ChangesDirectoryName, StringComparison.OrdinalIgnoreCase)
+            if (string.Equals(project, LegacyChangesDirectoryName, StringComparison.OrdinalIgnoreCase)
                 || projectNames.Contains(project, StringComparer.OrdinalIgnoreCase)
                 || Directory.Exists(Path.Combine(target, project)))
             {
@@ -173,7 +142,7 @@ public sealed class DeployPreparer(string deployRoot, string publishRoot, IReadO
         return carried;
     }
 
-    public static void Commit(string uploading, string target) => Directory.Move(uploading, target);
+    public static void Commit(string uploading, string reference) => Directory.Move(uploading, reference);
 
     public static void TryDelete(string? directory)
     {
@@ -190,6 +159,17 @@ public sealed class DeployPreparer(string deployRoot, string publishRoot, IReadO
         {
             Logger.LogWarning($"Could not delete {directory}:\n{e}");
         }
+    }
+
+    private string PublishedProjectDirectory(string project)
+    {
+        string source = Path.Combine(publishRoot, project);
+        if (!Directory.Exists(source))
+        {
+            throw new DirectoryNotFoundException($"Publish output of {project} was not found at {source}");
+        }
+
+        return source;
     }
 
     private static void CopyFile(string source, string destination)

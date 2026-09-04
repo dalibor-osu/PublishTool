@@ -24,7 +24,8 @@ public static class ConfigHandler
 
     private static void HandleDirConfig(string path, Config config, bool forceUpdate)
     {
-        bool needsUpdate = !config.PublishDirectories.ContainsKey(path) || !config.IgnoredDirectories.ContainsKey(path) ||
+        bool needsUpdate = !config.PublishDirectories.ContainsKey(path) || !config.SharedDirectories.ContainsKey(path) ||
+                           !config.DeployDirectories.ContainsKey(path) || !config.IgnoredDirectories.ContainsKey(path) ||
                            !config.PublishableProjects.ContainsKey(path) || forceUpdate;
         if (needsUpdate)
         {
@@ -36,15 +37,30 @@ public static class ConfigHandler
 
         if (!config.PublishDirectories.ContainsKey(path) || forceUpdate)
         {
-            string publishPath = AnsiConsole.Ask("Enter publish directory path", config.PublishDirectories.GetValueOrDefault(path, string.Empty));
+            string publishPath = AnsiConsole.Ask(
+                "Enter [green]publish directory[/] path (projects are published into it, one subdirectory per project)",
+                config.PublishDirectories.GetValueOrDefault(path, string.Empty));
             config.PublishDirectories[path] = publishPath;
             needsUpdate = true;
             AnsiConsole.Clear();
         }
 
-        if (forceUpdate)
+        if (!config.SharedDirectories.ContainsKey(path) || !config.DeployDirectories.ContainsKey(path) || forceUpdate)
         {
-            AskDeployDirectory(path, config);
+            bool hadSharedDirectory = config.SharedDirectories.ContainsKey(path);
+            string sharedDefault = config.SharedDirectories.GetValueOrDefault(path)
+                                   ?? config.DeployDirectories.GetValueOrDefault(path, string.Empty);
+            string deployDefault = hadSharedDirectory ? config.DeployDirectories.GetValueOrDefault(path, string.Empty) : string.Empty;
+
+            config.SharedDirectories[path] = AnsiConsole.Ask(
+                "Enter [green]shared directory[/] path (usually a network share; every complete publish stores its full output "
+                + "there as the reference the next one is compared with)",
+                sharedDefault);
+            config.DeployDirectories[path] = AnsiConsole.Ask(
+                "Enter [green]deploy directory[/] path (local; every complete publish creates a directory there with only the "
+                + "files that changed, ready to be deployed)",
+                deployDefault);
+            needsUpdate = true;
             AnsiConsole.Clear();
         }
 
@@ -53,7 +69,7 @@ public static class ConfigHandler
             string[] ignoredDirs = AnsiConsole
                 .Ask(
                     "Enter [green]directories[/] that will be ignored when scanning for projects in this directory (comma separated):",
-                    string.Join(", ", config.IgnoredDirectories.GetValueOrDefault(path, [])))
+                    string.Join(", ", config.IgnoredDirectories.GetValueOrDefault(path, [".git, .claude"])))
                 .Split(',')
                 .Select(s => s.Trim()).ToArray();
             config.IgnoredDirectories[path] = ignoredDirs;
@@ -90,33 +106,10 @@ public static class ConfigHandler
             AnsiConsole.Clear();
         }
 
-
         if (needsUpdate)
         {
             Save(config);
         }
-    }
-
-    public static string EnsureDeployDirectory(Config config, string path)
-    {
-        if (config.DeployDirectories.TryGetValue(path, out string? existing) && !string.IsNullOrWhiteSpace(existing))
-        {
-            return existing;
-        }
-
-        AnsiConsole.WriteLine($"A deploy directory is needed for the complete publish. ({path})");
-        AskDeployDirectory(path, config);
-        Save(config);
-        AnsiConsole.Clear();
-        return config.DeployDirectories[path];
-    }
-
-    private static void AskDeployDirectory(string path, Config config)
-    {
-        string deployPath = AnsiConsole.Ask(
-            "Enter deploy directory path (time-stamped deploy directories are created in it)",
-            config.DeployDirectories.GetValueOrDefault(path, string.Empty));
-        config.DeployDirectories[path] = deployPath;
     }
 
     private static void Save(Config config)

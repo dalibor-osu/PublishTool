@@ -55,8 +55,6 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
                     .Title("Select build Configuration:")
                     .AddChoices("Release", "Debug"), ct);
 
-        string? deployRoot = Options.Complete ? ConfigHandler.EnsureDeployDirectory(config, currentWorkingDirectory) : null;
-
         AnsiConsole.Clear();
 
         string publishRoot = config.PublishDirectories[currentWorkingDirectory];
@@ -70,13 +68,17 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
             .ToList();
 
         DeployStep? deployStep = null;
-        if (deployRoot is not null)
+        if (Options.Complete)
         {
+            var preparer = new DeployPreparer(
+                config.SharedDirectories[currentWorkingDirectory],
+                config.DeployDirectories[currentWorkingDirectory],
+                publishRoot,
+                projectsToPublish.Select(p => p.Name).ToList());
             deployStep = new DeployStep(
-                new DeployPreparer(deployRoot, publishRoot, projectsToPublish.Select(p => p.Name).ToList()),
-                display.Add("Preparing the deploy directory locally"),
-                display.Add("Collecting changed files"),
-                display.Add("Copying the deploy directory to the deploy root"));
+                preparer,
+                display.Add("Collecting changed files into the deploy directory"),
+                display.Add("Copying the full publish to the shared directory"));
         }
 
         var work = PublishAll(projectsToPublish, configuration, buildRow, publishRows, deployStep, ct);
@@ -112,7 +114,7 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         AnsiConsole.Write(EraseBelow);
     }
 
-    private sealed record DeployStep(DeployPreparer Preparer, JobRow CopyRow, JobRow ChangesRow, JobRow UploadRow);
+    private sealed record DeployStep(DeployPreparer Preparer, JobRow ChangesRow, JobRow UploadRow);
 
     private async Task PublishAll(
         IReadOnlyList<DotnetProject> projects,
@@ -158,45 +160,39 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         }
 
         var state = ct.IsCancellationRequested ? JobState.Cancelled : JobState.Skipped;
-        deployStep.CopyRow.Finish(state, reason);
         deployStep.ChangesRow.Finish(state, reason);
         deployStep.UploadRow.Finish(state, reason);
     }
 
     private async Task PrepareDeploy(DeployStep step, CancellationToken ct)
     {
-        var (preparer, copyRow, changesRow, uploadRow) = step;
-        string? target = null;
-        string? stage = null;
+        var (preparer, changesRow, uploadRow) = step;
+        string? name = null;
+        string? deployDirectory = null;
         string? uploading = null;
         try
         {
             string prefix = await DeployPreparer.ResolvePrefixAsync(Options.WorkingDirectory, ct);
-            target = preparer.TargetPath(prefix, DateTimeOffset.Now);
-            string targetName = Path.GetFileName(target);
-            string? previous = preparer.FindPreviousDeploy(prefix);
-            stage = DeployPreparer.CreateStagingDirectory();
+            name = DeployPreparer.DirectoryName(prefix, DateTimeOffset.Now);
+            string? previous = preparer.FindPreviousReference(prefix);
 
-            copyRow.Name = $"Preparing {targetName} in a local temp directory";
-            copyRow.Start();
-            int copied = await Task.Run(() => preparer.CopyPublishedProjects(stage, copyRow.AppendLine, ct), ct);
-            copyRow.Finish(JobState.Succeeded, $"{copied} files");
-
-            string changesDir = $"{targetName}\\{DeployPreparer.ChangesDirectoryName}";
+            deployDirectory = preparer.DeployPath(name);
             changesRow.Name = previous is null
-                ? $"Collecting changed files into {changesDir} (no previous deploy, everything is new)"
-                : $"Collecting changed files into {changesDir} (compared with {Path.GetFileName(previous)})";
+                ? $"Collecting changed files into {deployDirectory} (no previous publish in the shared directory, everything is new)"
+                : $"Collecting changed files into {deployDirectory} (compared with {Path.GetFileName(previous)})";
             changesRow.Start();
-            int changed = await Task.Run(() => preparer.CollectChanges(stage, previous, changesRow.AppendLine, ct), ct);
+            int changed = await Task.Run(() => preparer.CollectChanges(deployDirectory, previous, changesRow.AppendLine, ct), ct);
             changesRow.Finish(JobState.Succeeded, $"{changed} files");
+            deployDirectory = null;
 
-            uploadRow.Name = $"Copying {targetName} to {preparer.DeployRoot}";
+            string reference = preparer.ReferencePath(name);
+            uploadRow.Name = $"Copying the full publish to {reference}";
             uploadRow.Start();
-            uploading = await Task.Run(() => preparer.Upload(stage, target, uploadRow.AppendLine, ct), ct);
+            uploading = await Task.Run(() => preparer.Upload(reference, uploadRow.AppendLine, ct), ct);
             var carried = previous is null
                 ? []
                 : await Task.Run(() => preparer.CarryForwardMissingProjects(uploading, previous, uploadRow.AppendLine, ct), ct);
-            DeployPreparer.Commit(uploading, target);
+            DeployPreparer.Commit(uploading, reference);
             uploading = null;
             uploadRow.Finish(JobState.Succeeded, carried.Count == 0
                 ? null
@@ -209,18 +205,18 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         catch (Exception ex)
         {
             _hasError = true;
-            Logger.LogError($"Preparing the deploy directory{(target is null ? string.Empty : $" {target}")} failed:\n{ex}");
+            Logger.LogError($"Preparing the deploy{(name is null ? string.Empty : $" {name}")} failed:\n{ex}");
             FinishUnfinished(JobState.Failed, ex.Message);
         }
         finally
         {
+            DeployPreparer.TryDelete(deployDirectory);
             DeployPreparer.TryDelete(uploading);
-            DeployPreparer.TryDelete(stage);
         }
 
         void FinishUnfinished(JobState state, string? detail)
         {
-            foreach (var row in new[] { copyRow, changesRow, uploadRow }.Where(r => !r.IsFinished))
+            foreach (var row in new[] { changesRow, uploadRow }.Where(r => !r.IsFinished))
             {
                 row.Finish(state, detail);
             }

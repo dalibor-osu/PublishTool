@@ -11,9 +11,10 @@ public class PublishCommandOptions
     [Option("-a", Description = "Publish every project in Release configuration without asking")]
     public bool All { get; set; } = false;
 
-    [Option("-c", "--complete", Description = "After publishing, create a time-stamped directory in the deploy directory "
-        + "(named after the current git branch, e.g. PROD_2026-09-03_15-03-43) with the full publish, and a Deploy "
-        + "subdirectory with only the files that differ from the previous deploy of the same branch")]
+    [Option("-c", "--complete", Description = "After publishing, compare the publish with the previous one of the current git "
+        + "branch in the shared directory and create a directory named after the branch and time (e.g. PROD_2026-09-03_15-03-43) "
+        + "in the deploy directory with only the changed files. The full publish is stored under the same name in the shared "
+        + "directory as the reference for the next comparison")]
     public bool Complete { get; set; } = false;
 
     internal static bool ParseWorkingDirectory(string value, PublishCommandOptions options, out string? error)
