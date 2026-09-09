@@ -1,5 +1,6 @@
 ﻿using PublishTool;
 using PublishTool.Commands;
+using PublishTool.Configuration;
 using PublishTool.Generated;
 using Spectre.Console;
 
@@ -41,6 +42,12 @@ var commandAction = async Task<int> () =>
     catch (OperationCanceledException)
     {
         return ct.IsCancellationRequested ? 0 : 1;
+    }
+    catch (ConfigException e)
+    {
+        AnsiConsole.MarkupLineInterpolated($"[red]{e.Message}[/]");
+        Logger.LogError(e.ToString());
+        return 1;
     }
     catch (Exception e)
     {

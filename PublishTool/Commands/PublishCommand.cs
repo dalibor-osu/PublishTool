@@ -1,5 +1,6 @@
 using PublishTool.Attributes;
 using PublishTool.Commands.Options;
+using PublishTool.Configuration;
 using PublishTool.Console;
 using PublishTool.Helpers;
 using Spectre.Console;

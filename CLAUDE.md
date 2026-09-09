@@ -32,7 +32,13 @@ PublishTool/                      The CLI (net10.0, PublishAot, InvariantGlobali
     UpdateCommand.cs              Self-update from GitHub releases (download, extract, swap exe, .old backup)
     VersionCommand.cs / HelpCommand.cs
   Attributes/                     CommandAttribute, OptionAttribute (consumed by the source generator)
-  Config.cs / ConfigHandler.cs    Config model + interactive wizard; JSON via source-generated JsonContext
+  Configuration/                  Config file handling
+    Config.cs                     Current config model (has a Version field)
+    ConfigHandler.cs              Interactive wizard for settings a directory does not have yet
+    ConfigStore.cs                Load/save with version detection, migrator chain, backup of migrated files
+    ConfigVersioning.cs           IVersionedConfig, ConfigEnvelope, IConfigParser/ConfigParser<T>, ConfigMigrator<TFrom,TTo>, ConfigException
+    ConfigVersions.cs             Registry: Current version, parsers per version, migrators per step (+ recipe for a new version)
+    JsonContext.cs                Source-generated JSON metadata for every readable config model
   ProjectScanner.cs               Finds *.csproj recursively, detects Sdk / LegacyWeb / LegacyLibrary
   DependencyBuild.cs              Writes a temp traversal .proj that restores + builds all projects with /m
   PublishCommandBuilder.cs        Builds the MSBuild command line per project kind
@@ -107,9 +113,17 @@ The `update` command downloads exactly these asset names, so keep the naming in 
 - **Process output**: use `ProcessHelper.RunAsync`; it streams stdout/stderr lines to a callback and returns
   exit code plus captured output.
 - **Config**: `%APPDATA%\PublishTool\config.json`, keyed by the absolute working directory. Keys:
-  `PublishDirectories`, `SharedDirectories`, `DeployDirectories`, `IgnoredDirectories`, `PublishableProjects`.
-  `ConfigHandler.Load` runs the interactive wizard for any missing key, so adding a new per-directory setting
-  means adding a dictionary to `Config`, a prompt in `HandleDirConfig`, and extending `needsUpdate`.
+  `Version`, `PublishDirectories`, `SharedDirectories`, `DeployDirectories`, `IgnoredDirectories`,
+  `PublishableProjects`. `ConfigHandler.Load` runs the interactive wizard for any missing key, so adding a new
+  per-directory setting means adding a dictionary to `Config`, a prompt in `HandleDirConfig`, and extending
+  `needsUpdate`. That is **not** a new format version.
+- **Config format versions**: the file carries `Version` (files without it are version 1). `ConfigStore`
+  reads the version, parses with that version's `ConfigParser`, runs the `ConfigMigrator` chain step by step
+  to `ConfigVersions.Current`, then backs the old file up as `config.v<N>.json.bak` and saves the upgraded
+  one. A file newer than the tool is rejected with a `ConfigException` (shown in red by `Program.cs`); there
+  is no downgrade. Bump the version only when the old model can no longer read the file (renamed/reshaped
+  properties). The step-by-step recipe lives in the doc comment of `ConfigVersions`; the store validates
+  at startup that every version has a parser and every step a migrator, so mistakes fail on the first run.
 - **Project kinds** (`ProjectScanner.DetectKind`): SDK-style projects are published with
   `/t:Publish /p:RuntimeIdentifier=win-x64 /p:SelfContained=false`; legacy web projects
   (`Microsoft.WebApplication.targets`) use `DeployOnBuild` + `WebPublishMethod=FileSystem`; other legacy

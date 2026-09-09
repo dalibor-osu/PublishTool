@@ -1,23 +1,16 @@
-using System.Text.Json;
 using Spectre.Console;
 
-namespace PublishTool;
+namespace PublishTool.Configuration;
 
 public static class ConfigHandler
 {
-    private static string ConfigDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PublishTool");
-
+    /// <summary>
+    /// Loads the config (migrating older file formats, see <see cref="ConfigStore"/>) and runs the interactive wizard for every
+    /// setting the working directory does not have yet. Throws <see cref="ConfigException"/> when the file cannot be used.
+    /// </summary>
     public static Config Load(string workingDir, bool forceUpdate = false)
     {
-        string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PublishTool", "config.json");
-        var result = new Config();
-        if (File.Exists(path))
-        {
-            string json = File.ReadAllText(path);
-            result = JsonSerializer.Deserialize<Config>(json, JsonContext.Default.Config) ??
-                     throw new InvalidOperationException("Failed to deserialize config file!");
-        }
-
+        var result = ConfigStore.Default.Load();
         HandleDirConfig(workingDir, result, forceUpdate);
         return result;
     }
@@ -112,15 +105,5 @@ public static class ConfigHandler
         }
     }
 
-    private static void Save(Config config)
-    {
-        if (!Directory.Exists(ConfigDir))
-        {
-            Directory.CreateDirectory(ConfigDir);
-        }
-
-        string path = Path.Combine(ConfigDir, "config.json");
-        string json = JsonSerializer.Serialize(config, JsonContext.Default.Config);
-        File.WriteAllText(path, json);
-    }
+    private static void Save(Config config) => ConfigStore.Default.Save(config);
 }
