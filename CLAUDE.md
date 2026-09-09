@@ -128,7 +128,7 @@ Naming: `<prefix>_<yyyy-MM-dd_HH-mm-ss>` where prefix is the sanitized current g
 not in a git repo). The shared directory contains **only zip files** named `<name>.zip`, project
 directories at the archive root (`Web/...`, `Api/...`), created with `CompressionLevel.Fastest`.
 
-Steps, each its own row in the UI:
+Steps, each its own row in the UI (five deploy rows in total):
 
 1. **Download**: `FindPreviousReference(prefix)` picks the newest `<prefix>_*.zip`. It is copied to
    `<deploy dir>\<name>.tmp\previous.zip` and extracted to `<deploy dir>\<name>.tmp\previous\`. If a
@@ -143,6 +143,10 @@ Steps, each its own row in the UI:
 4. **Upload**: the zip is streamed to `<shared>\<name>.zip.uploading` with percent progress, then renamed
    to `<name>.zip`. The `.tmp` work directory is deleted; on failure or cancel the partial upload and the
    deploy directory are deleted as well.
+5. **Prune**: after the new zip is in place, all but the newest `KeepReferences` (3, constant in
+   `PublishCommand`) archives of the same prefix are deleted from the share. Only `.zip` files whose name
+   parses as `<prefix>_<timestamp>` are touched; old-workflow directories, other branches and `.uploading`
+   leftovers are ignored. A failed delete is logged and shown but does not fail the publish.
 
 Design intent: the shared directory is on a slow remote server, so it must only ever see whole-file
 copies of one zip (no per-file IO, no remote extraction). All heavy work happens on the local machine.
@@ -179,7 +183,7 @@ PublishTool [command] [options]
    ignore while scanning (default `.git, .claude`), and which projects are publishable. Re-run the wizard
    with `PublishTool config -dir C:\repo`.
 2. **Publish**: `PublishTool publish` prompts for projects and configuration (Release/Debug), then shows the
-   build row, one row per project and, with `--complete`, the four deploy rows. `-a` publishes all
+   build row, one row per project and, with `--complete`, the five deploy rows. `-a` publishes all
    publishable projects in Release without prompts. Exit code 0 on success, 1 on any failure.
 3. **Deploy**: after `--complete`, hand `<deploy dir>\<branch>_<timestamp>` to whoever deploys; it contains
    only the files that differ from the previous publish of the same branch.

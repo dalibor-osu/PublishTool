@@ -11,6 +11,9 @@ namespace PublishTool.Commands;
 public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCommandOptions>
 {
     private const int OutputTailLength = 5;
+
+    /// <summary>How many reference archives per branch stay in the shared directory after a publish (the newest one plus backups).</summary>
+    private const int KeepReferences = 3;
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(100);
 
     public PublishCommandOptions Options { get; } = options;
@@ -80,7 +83,8 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
                 display.Add("Downloading the previous publish of this branch from the shared directory"),
                 display.Add("Collecting changed files into the deploy directory"),
                 display.Add("Compressing the full publish into an archive"),
-                display.Add("Uploading the archive to the shared directory"));
+                display.Add("Uploading the archive to the shared directory"),
+                display.Add($"Deleting old publishes of this branch from the shared directory (keeping the last {KeepReferences})"));
         }
 
         var work = PublishAll(projectsToPublish, configuration, buildRow, publishRows, deployStep, ct);
@@ -116,9 +120,15 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         AnsiConsole.Write(EraseBelow);
     }
 
-    private sealed record DeployStep(DeployPreparer Preparer, JobRow DownloadRow, JobRow ChangesRow, JobRow ArchiveRow, JobRow UploadRow)
+    private sealed record DeployStep(
+        DeployPreparer Preparer,
+        JobRow DownloadRow,
+        JobRow ChangesRow,
+        JobRow ArchiveRow,
+        JobRow UploadRow,
+        JobRow PruneRow)
     {
-        public IEnumerable<JobRow> Rows => [DownloadRow, ChangesRow, ArchiveRow, UploadRow];
+        public IEnumerable<JobRow> Rows => [DownloadRow, ChangesRow, ArchiveRow, UploadRow, PruneRow];
     }
 
     private async Task PublishAll(
@@ -173,7 +183,7 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
 
     private async Task PrepareDeploy(DeployStep step, CancellationToken ct)
     {
-        var (preparer, downloadRow, changesRow, archiveRow, uploadRow) = step;
+        var (preparer, downloadRow, changesRow, archiveRow, uploadRow, pruneRow) = step;
         string? name = null;
         string? work = null;
         string? deployDirectory = null;
@@ -230,6 +240,14 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
             DeployPreparer.Commit(uploading, newReference);
             uploading = null;
             uploadRow.Finish(JobState.Succeeded, DeployPreparer.FormatSize(archiveInfo.Size));
+
+            // 5. Only now that the new reference is in place, drop the oldest archives of this branch beyond the retention limit.
+            pruneRow.Name = $"Deleting old {prefix} publishes from {preparer.SharedRoot} (keeping the last {KeepReferences})";
+            pruneRow.Start();
+            var deleted = await Task.Run(() => preparer.PruneReferences(prefix, KeepReferences, pruneRow.AppendLine, ct), ct);
+            pruneRow.Finish(JobState.Succeeded, deleted.Count == 0
+                ? "nothing to delete"
+                : $"{deleted.Count} archive(s) deleted: {string.Join(", ", deleted)}");
         }
         catch (OperationCanceledException)
         {

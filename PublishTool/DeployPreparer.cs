@@ -75,32 +75,19 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
         DateTime bestArchiveTime = DateTime.MinValue;
         string? legacy = null;
         DateTime legacyTime = DateTime.MinValue;
-        foreach (var entry in new DirectoryInfo(SharedRoot).EnumerateFileSystemInfos())
+        foreach (var (path, isDirectory, time) in EnumerateReferences(prefix))
         {
-            bool isDirectory = entry is DirectoryInfo;
-            if (!isDirectory && !string.Equals(entry.Extension, ArchiveExtension, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            string name = isDirectory ? entry.Name : Path.GetFileNameWithoutExtension(entry.Name);
-            if (!TryParseName(name, out string candidatePrefix, out DateTime time)
-                || !string.Equals(candidatePrefix, prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
             if (isDirectory)
             {
                 if (time > legacyTime)
                 {
-                    legacy = entry.FullName;
+                    legacy = path;
                     legacyTime = time;
                 }
             }
             else if (time > bestArchiveTime)
             {
-                bestArchive = entry.FullName;
+                bestArchive = path;
                 bestArchiveTime = time;
             }
         }
@@ -114,6 +101,58 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
         }
 
         return bestArchive;
+    }
+
+    /// <summary>
+    /// Deletes all reference archives of the prefix except the <paramref name="keep"/> newest ones. Only archives are touched;
+    /// directories from the old workflow and other prefixes are left alone. Returns the names of the deleted archives; a failed
+    /// deletion is logged and reported but does not throw, since the publish itself already succeeded.
+    /// </summary>
+    public IReadOnlyList<string> PruneReferences(string prefix, int keep, Action<string> report, CancellationToken ct)
+    {
+        var deleted = new List<string>();
+        var stale = EnumerateReferences(prefix)
+            .Where(r => !r.IsDirectory)
+            .OrderByDescending(r => r.Time)
+            .Skip(keep);
+        foreach (var (path, _, _) in stale)
+        {
+            ct.ThrowIfCancellationRequested();
+            string name = Path.GetFileName(path);
+            try
+            {
+                File.Delete(path);
+                deleted.Add(name);
+                report($"deleted {name}");
+            }
+            catch (Exception e)
+            {
+                Logger.LogWarning($"Could not delete old reference {path}:\n{e}");
+                report($"could not delete {name}: {e.Message}");
+            }
+        }
+
+        return deleted;
+    }
+
+    /// <summary>Reference archives (and old-workflow directories) of the prefix in the shared directory, in no particular order.</summary>
+    private IEnumerable<(string Path, bool IsDirectory, DateTime Time)> EnumerateReferences(string prefix)
+    {
+        foreach (var entry in new DirectoryInfo(SharedRoot).EnumerateFileSystemInfos())
+        {
+            bool isDirectory = entry is DirectoryInfo;
+            if (!isDirectory && !string.Equals(entry.Extension, ArchiveExtension, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string name = isDirectory ? entry.Name : Path.GetFileNameWithoutExtension(entry.Name);
+            if (TryParseName(name, out string candidatePrefix, out DateTime time)
+                && string.Equals(candidatePrefix, prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return (entry.FullName, isDirectory, time);
+            }
+        }
     }
 
     /// <summary>
