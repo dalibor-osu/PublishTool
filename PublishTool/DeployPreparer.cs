@@ -4,11 +4,6 @@ using PublishTool.Helpers;
 
 namespace PublishTool;
 
-/// <summary>
-/// Prepares a deploy: compares the local publish with the previous reference of the branch and produces a directory with the
-/// changed files. References live in the shared directory purely as zip archives ("prefix_timestamp.zip", project directories
-/// at the archive root); all extraction and comparison happens locally so the shared directory only ever sees whole-file copies.
-/// </summary>
 public sealed class DeployPreparer(string sharedRoot, string deployRoot, string publishRoot, IReadOnlyList<string> projectNames)
 {
     private const string FallbackPrefix = "DEPLOY";
@@ -50,25 +45,16 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
     public static string DirectoryName(string prefix, DateTimeOffset time) =>
         $"{prefix}_{time.ToString(TimestampFormat, CultureInfo.InvariantCulture)}";
 
-    /// <summary>Local directory that receives the changed files.</summary>
     public string DeployPath(string name) => Path.Combine(DeployRoot, name);
 
-    /// <summary>Local scratch directory for the downloaded previous reference and the new archive; deleted when done.</summary>
     public string WorkPath(string name) => Path.Combine(DeployRoot, name + WorkSuffix);
 
-    /// <summary>Local path of the new reference archive before it is uploaded.</summary>
     public string ArchivePath(string name) => Path.Combine(WorkPath(name), name + ArchiveExtension);
 
-    /// <summary>Final path of the reference archive in the shared directory.</summary>
     public string ReferencePath(string name) => Path.Combine(SharedRoot, name + ArchiveExtension);
 
-    /// <summary>Temporary name the archive is uploaded under before being renamed to the reference path.</summary>
     public static string UploadPath(string reference) => reference + UploadSuffix;
 
-    /// <summary>
-    /// Finds the newest reference archive of the prefix. Throws when a newer reference exists as a directory from the previous
-    /// workflow, because silently ignoring it would produce a deploy that contains everything.
-    /// </summary>
     public string? FindPreviousReference(string prefix)
     {
         string? bestArchive = null;
@@ -103,11 +89,6 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
         return bestArchive;
     }
 
-    /// <summary>
-    /// Deletes all reference archives of the prefix except the <paramref name="keep"/> newest ones. Only archives are touched;
-    /// directories from the old workflow and other prefixes are left alone. Returns the names of the deleted archives; a failed
-    /// deletion is logged and reported but does not throw, since the publish itself already succeeded.
-    /// </summary>
     public IReadOnlyList<string> PruneReferences(string prefix, int keep, Action<string> report, CancellationToken ct)
     {
         var deleted = new List<string>();
@@ -135,7 +116,6 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
         return deleted;
     }
 
-    /// <summary>Reference archives (and old-workflow directories) of the prefix in the shared directory, in no particular order.</summary>
     private IEnumerable<(string Path, bool IsDirectory, DateTime Time)> EnumerateReferences(string prefix)
     {
         foreach (var entry in new DirectoryInfo(SharedRoot).EnumerateFileSystemInfos())
@@ -155,10 +135,6 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
         }
     }
 
-    /// <summary>
-    /// Copies the previous reference archive into the work directory and extracts it there. Returns the extracted directory,
-    /// laid out like the publish root (one subdirectory per project).
-    /// </summary>
     public static (string Directory, int Files) Download(string reference, string workDirectory, Action<string> report, CancellationToken ct)
     {
         Directory.CreateDirectory(workDirectory);
@@ -196,10 +172,6 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
         return changed;
     }
 
-    /// <summary>
-    /// Compresses the publish output of every published project into the archive. Projects that exist in the previous reference
-    /// but were not published this time are carried over from it so the new reference stays complete.
-    /// </summary>
     public ArchiveInfo CreateArchive(string archive, string? previous, Action<string> report, CancellationToken ct)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(archive)!);
@@ -235,7 +207,6 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
         return new ArchiveInfo(archive, total, new FileInfo(archive).Length, carried);
     }
 
-    /// <summary>Copies the archive to the shared directory under its temporary upload name and returns that path.</summary>
     public static string Upload(string archive, string reference, Action<string> report, CancellationToken ct)
     {
         string uploading = UploadPath(reference);

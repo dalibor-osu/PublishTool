@@ -4,106 +4,109 @@ namespace PublishTool.Configuration;
 
 public static class ConfigHandler
 {
-    /// <summary>
-    /// Loads the config (migrating older file formats, see <see cref="ConfigStore"/>) and runs the interactive wizard for every
-    /// setting the working directory does not have yet. Throws <see cref="ConfigException"/> when the file cannot be used.
-    /// </summary>
-    public static Config Load(string workingDir, bool forceUpdate = false)
+    private static readonly string[] DefaultIgnoredDirectories = [".git", ".claude"];
+
+    public static DirectorySettings Load(string workingDir, bool forceUpdate = false)
     {
-        var result = ConfigStore.Default.Load();
-        HandleDirConfig(workingDir, result, forceUpdate);
-        return result;
+        var config = ConfigStore.Default.Load();
+        var settings = config.For(workingDir);
+        if (!settings.IsComplete || forceUpdate)
+        {
+            RunWizard(workingDir, settings, forceUpdate);
+            ConfigStore.Default.Save(config);
+        }
+
+        return settings;
     }
 
-    private static void HandleDirConfig(string path, Config config, bool forceUpdate)
+    private static void RunWizard(string path, DirectorySettings settings, bool forceUpdate)
     {
-        bool needsUpdate = !config.PublishDirectories.ContainsKey(path) || !config.SharedDirectories.ContainsKey(path) ||
-                           !config.DeployDirectories.ContainsKey(path) || !config.IgnoredDirectories.ContainsKey(path) ||
-                           !config.PublishableProjects.ContainsKey(path) || forceUpdate;
-        if (needsUpdate)
+        AnsiConsole.Write(new FigletText("PublishTool"));
+        AnsiConsole.WriteLine(forceUpdate
+            ? $"Editing config for directory ({path})"
+            : $"We need to setup some basic configurations for this directory first. ({path})");
+
+        if (settings.PublishDirectory is null || forceUpdate)
         {
-            AnsiConsole.Write(new FigletText("PublishTool"));
-            AnsiConsole.WriteLine(forceUpdate
-                ? $"Editing config for directory ({path})"
-                : $"We need to setup some basic configurations for this directory first. ({path})");
+            AskPublishDirectory(settings);
         }
 
-        if (!config.PublishDirectories.ContainsKey(path) || forceUpdate)
+        if (settings.SharedDirectory is null || settings.DeployDirectory is null || forceUpdate)
         {
-            string publishPath = AnsiConsole.Ask(
-                "Enter [green]publish directory[/] path (projects are published into it, one subdirectory per project)",
-                config.PublishDirectories.GetValueOrDefault(path, string.Empty));
-            config.PublishDirectories[path] = publishPath;
-            needsUpdate = true;
-            AnsiConsole.Clear();
+            AskSharedAndDeployDirectories(settings);
         }
 
-        if (!config.SharedDirectories.ContainsKey(path) || !config.DeployDirectories.ContainsKey(path) || forceUpdate)
+        if (settings.IgnoredDirectories is null || forceUpdate)
         {
-            bool hadSharedDirectory = config.SharedDirectories.ContainsKey(path);
-            string sharedDefault = config.SharedDirectories.GetValueOrDefault(path)
-                                   ?? config.DeployDirectories.GetValueOrDefault(path, string.Empty);
-            string deployDefault = hadSharedDirectory ? config.DeployDirectories.GetValueOrDefault(path, string.Empty) : string.Empty;
-
-            config.SharedDirectories[path] = AnsiConsole.Ask(
-                "Enter [green]shared directory[/] path (usually a network share; every complete publish stores its full output there "
-                + "as a zip archive that the next one is compared with)",
-                sharedDefault);
-            config.DeployDirectories[path] = AnsiConsole.Ask(
-                "Enter [green]deploy directory[/] path (local; every complete publish creates a directory there with only the "
-                + "files that changed, ready to be deployed)",
-                deployDefault);
-            needsUpdate = true;
-            AnsiConsole.Clear();
+            AskIgnoredDirectories(settings);
         }
 
-        if (!config.IgnoredDirectories.ContainsKey(path) || forceUpdate)
+        if (settings.PublishableProjects is null || forceUpdate)
         {
-            string[] ignoredDirs = AnsiConsole
-                .Ask(
-                    "Enter [green]directories[/] that will be ignored when scanning for projects in this directory (comma separated):",
-                    string.Join(", ", config.IgnoredDirectories.GetValueOrDefault(path, [".git, .claude"])))
-                .Split(',')
-                .Select(s => s.Trim()).ToArray();
-            config.IgnoredDirectories[path] = ignoredDirs;
-            needsUpdate = true;
-            AnsiConsole.Clear();
-        }
-
-        if (!config.PublishableProjects.ContainsKey(path) || forceUpdate)
-        {
-            var allProjects = ProjectScanner.Scan(config, path, true);
-            if (allProjects.Count == 0)
-            {
-                AnsiConsole.MarkupLine("No projects found in this directory.");
-                Environment.Exit(1);
-                return;
-            }
-
-            var prompt = new MultiSelectionPrompt<string>()
-                .Title("Select [green]projects[/] that will be available to publish from this directory:")
-                .AddChoices(allProjects.Select(p => p.Name));
-            if (forceUpdate && config.PublishableProjects.TryGetValue(path, out string[]? preselectedProjects))
-            {
-                foreach (string preselectedProject in preselectedProjects)
-                {
-                    prompt.Select(preselectedProject);
-                }
-            }
-
-            string[] selectedProjects = AnsiConsole.Prompt(prompt).ToArray();
-
-            var finalProjects = allProjects.Where(p => selectedProjects.Contains(p.Name)).ToArray();
-            config.PublishableProjects[path] = finalProjects.Select(p => p.Name).ToArray();
-            needsUpdate = true;
-            AnsiConsole.Clear();
-        }
-
-        if (needsUpdate)
-        {
-            Save(config);
+            AskPublishableProjects(path, settings, forceUpdate);
         }
     }
 
-    private static void Save(Config config) => ConfigStore.Default.Save(config);
+    private static void AskPublishDirectory(DirectorySettings settings)
+    {
+        settings.PublishDirectory = AnsiConsole.Ask(
+            "Enter [green]publish directory[/] path (projects are published into it, one subdirectory per project)",
+            settings.PublishDirectory ?? string.Empty);
+        AnsiConsole.Clear();
+    }
+
+    private static void AskSharedAndDeployDirectories(DirectorySettings settings)
+    {
+        string sharedDefault = settings.SharedDirectory ?? settings.DeployDirectory ?? string.Empty;
+        string deployDefault = settings.SharedDirectory is not null ? settings.DeployDirectory ?? string.Empty : string.Empty;
+
+        settings.SharedDirectory = AnsiConsole.Ask(
+            "Enter [green]shared directory[/] path (usually a network share; every complete publish stores its full output there "
+            + "as a zip archive that the next one is compared with)",
+            sharedDefault);
+        settings.DeployDirectory = AnsiConsole.Ask(
+            "Enter [green]deploy directory[/] path (local; every complete publish creates a directory there with only the "
+            + "files that changed, ready to be deployed)",
+            deployDefault);
+        AnsiConsole.Clear();
+    }
+
+    private static void AskIgnoredDirectories(DirectorySettings settings)
+    {
+        settings.IgnoredDirectories = AnsiConsole
+            .Ask(
+                "Enter [green]directories[/] that will be ignored when scanning for projects in this directory (comma separated):",
+                string.Join(", ", settings.IgnoredDirectories ?? DefaultIgnoredDirectories))
+            .Split(',')
+            .Select(s => s.Trim())
+            .ToArray();
+        AnsiConsole.Clear();
+    }
+
+    private static void AskPublishableProjects(string path, DirectorySettings settings, bool forceUpdate)
+    {
+        var allProjects = ProjectScanner.Scan(settings, path, true);
+        if (allProjects.Count == 0)
+        {
+            throw new ConfigException($"No projects found in {path}.");
+        }
+
+        var prompt = new MultiSelectionPrompt<string>()
+            .Title("Select [green]projects[/] that will be available to publish from this directory:")
+            .AddChoices(allProjects.Select(p => p.Name));
+        if (forceUpdate && settings.PublishableProjects is { } preselectedProjects)
+        {
+            foreach (string preselectedProject in preselectedProjects)
+            {
+                prompt.Select(preselectedProject);
+            }
+        }
+
+        string[] selectedProjects = AnsiConsole.Prompt(prompt).ToArray();
+        settings.PublishableProjects = allProjects
+            .Where(p => selectedProjects.Contains(p.Name))
+            .Select(p => p.Name)
+            .ToArray();
+        AnsiConsole.Clear();
+    }
 }

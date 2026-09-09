@@ -3,7 +3,6 @@ using System.Text.Json.Serialization.Metadata;
 
 namespace PublishTool.Configuration;
 
-/// <summary>The application's config store: <c>%APPDATA%\PublishTool\config.json</c> with the registered versions.</summary>
 public static class ConfigStore
 {
     public static readonly string Directory =
@@ -17,11 +16,6 @@ public static class ConfigStore
         JsonContext.Default.Config);
 }
 
-/// <summary>
-/// Loads and saves a versioned config file. Loading reads the version field, parses the file with the parser of that version,
-/// chains migrators until the current version is reached, and, if anything was migrated, keeps a backup of the old file and
-/// writes the upgraded one. Files written by a newer version of the tool are rejected.
-/// </summary>
 public sealed class ConfigStore<TConfig> where TConfig : class, IVersionedConfig
 {
     private const int FirstVersion = 1;
@@ -47,7 +41,6 @@ public sealed class ConfigStore<TConfig> where TConfig : class, IVersionedConfig
 
     public string Path { get; }
 
-    /// <summary>Path the previous file is copied to before a migrated config overwrites it.</summary>
     public string BackupPath(int version) =>
         System.IO.Path.Combine(
             System.IO.Path.GetDirectoryName(Path)!,
@@ -59,7 +52,6 @@ public sealed class ConfigStore<TConfig> where TConfig : class, IVersionedConfig
         return envelope?.Version ?? FirstVersion;
     }
 
-    /// <summary>Returns the config at the current version, or a fresh one when there is no file yet.</summary>
     public TConfig Load()
     {
         if (!File.Exists(Path))
@@ -132,7 +124,6 @@ public sealed class ConfigStore<TConfig> where TConfig : class, IVersionedConfig
         JsonSerializer.Deserialize("{}", _currentTypeInfo)
         ?? throw new InvalidOperationException($"Could not create an empty {typeof(TConfig).Name}");
 
-    /// <summary>Fails fast on a registry mistake so a broken chain shows up on the first run, not on the first migration.</summary>
     private void Validate()
     {
         if (_currentVersion < FirstVersion)
@@ -153,9 +144,10 @@ public sealed class ConfigStore<TConfig> where TConfig : class, IVersionedConfig
             }
         }
 
-        foreach (int version in _parsers.Keys.Where(v => v > _currentVersion))
+        int newestVersion = _parsers.Keys.Max();
+        if (newestVersion > _currentVersion)
         {
-            throw new InvalidOperationException($"A config parser is registered for version {version}, which is newer than the current {_currentVersion}");
+            throw new InvalidOperationException($"A config parser is registered for version {newestVersion}, which is newer than the current {_currentVersion}");
         }
     }
 }

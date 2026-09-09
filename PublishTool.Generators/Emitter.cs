@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -131,6 +132,7 @@ internal static class Emitter
         public List<OptionView> Options { get; private set; } = new();
         public string Help { get; set; } = string.Empty;
 
+        [SuppressMessage("Major Code Smell", "S1144:Unused private types or members should be removed", Justification = "Read by the Scriban templates")]
         public bool HasDeclaredOptions => Options.Any(option => option.Kind != OptionView.HelpKind);
 
         public static CommandView From(CommandModel model)
@@ -162,6 +164,7 @@ internal static class Emitter
         public string? ParserMethod { get; private set; }
         public List<string> Aliases { get; private set; } = new();
 
+        [SuppressMessage("Major Code Smell", "S1144:Unused private types or members should be removed", Justification = "Read by the Scriban templates")]
         public bool TakesValue => Kind != OptionKind.Flag.ToString() && Kind != HelpKind;
 
         public static OptionView Help => new()

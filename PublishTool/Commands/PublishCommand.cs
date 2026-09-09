@@ -12,8 +12,6 @@ namespace PublishTool.Commands;
 public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCommandOptions>
 {
     private const int OutputTailLength = 5;
-
-    /// <summary>How many reference archives per branch stay in the shared directory after a publish (the newest one plus backups).</summary>
     private const int KeepReferences = 3;
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(100);
 
@@ -33,15 +31,19 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         }
 
         string currentWorkingDirectory = Options.WorkingDirectory;
-        var config = ConfigHandler.Load(currentWorkingDirectory);
-        var projects = ProjectScanner.Scan(config, currentWorkingDirectory);
+        var settings = ConfigHandler.Load(currentWorkingDirectory);
+        if (!settings.IsComplete)
+        {
+            throw new ConfigException($"The directory {currentWorkingDirectory} is not fully configured, run 'PublishTool config'.");
+        }
+
+        var projects = ProjectScanner.Scan(settings, currentWorkingDirectory);
 
         if (projects.Count == 0)
         {
             AnsiConsole.MarkupLine("No projects found in this directory.");
             return 1;
         }
-
 
         var selectedProjects = Options.All
             ? projects.Select(p => p.Name)
@@ -61,7 +63,7 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
 
         AnsiConsole.Clear();
 
-        string publishRoot = config.PublishDirectories[currentWorkingDirectory];
+        string publishRoot = settings.PublishDirectory;
         var publishCommands = projectsToPublish
             .Select(p => new PublishCommandBuilder(p, configuration, Path.Combine(publishRoot, p.Name))).ToList();
 
@@ -75,8 +77,8 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         if (Options.Complete)
         {
             var preparer = new DeployPreparer(
-                config.SharedDirectories[currentWorkingDirectory],
-                config.DeployDirectories[currentWorkingDirectory],
+                settings.SharedDirectory,
+                settings.DeployDirectory,
                 publishRoot,
                 projectsToPublish.Select(p => p.Name).ToList());
             deployStep = new DeployStep(
@@ -93,7 +95,7 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         try
         {
             // Redraw on a timer regardless of cancellation so the display keeps up until the very end.
-            while (await Task.WhenAny(work, Task.Delay(RefreshInterval)) != work)
+            while (await Task.WhenAny(work, Task.Delay(RefreshInterval, CancellationToken.None)) != work)
             {
                 Draw(display);
             }
@@ -196,7 +198,6 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
             string? previousReference = preparer.FindPreviousReference(prefix);
             work = preparer.WorkPath(name);
 
-            // 1. Bring the previous reference archive to the local machine and extract it there.
             string? previous = null;
             if (previousReference is null)
             {
@@ -212,7 +213,6 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
                 downloadRow.Finish(JobState.Succeeded, $"{files} files");
             }
 
-            // 2. Compare the local publish with the extracted previous reference.
             deployDirectory = preparer.DeployPath(name);
             changesRow.Name = previousReference is null
                 ? $"Collecting changed files into {deployDirectory} (everything is new)"
@@ -222,7 +222,6 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
             changesRow.Finish(JobState.Succeeded, $"{changed} files");
             deployDirectory = null;
 
-            // 3. Build the new reference archive locally, carrying over projects that were not published this time.
             string archive = preparer.ArchivePath(name);
             archiveRow.Name = $"Compressing the full publish into {archive}";
             archiveRow.Start();
@@ -232,7 +231,6 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
                 : $"{archiveInfo.Files} files, {DeployPreparer.FormatSize(archiveInfo.Size)}, {archiveInfo.Carried.Count} unpublished "
                   + $"project(s) carried over from {Path.GetFileName(previousReference)}");
 
-            // 4. Upload the single archive; it becomes the reference for the next publish.
             string newReference = preparer.ReferencePath(name);
             uploadRow.Name = $"Uploading {Path.GetFileName(newReference)} to {preparer.SharedRoot}";
             uploadRow.Start();
@@ -242,7 +240,6 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
             uploading = null;
             uploadRow.Finish(JobState.Succeeded, DeployPreparer.FormatSize(archiveInfo.Size));
 
-            // 5. Only now that the new reference is in place, drop the oldest archives of this branch beyond the retention limit.
             pruneRow.Name = $"Deleting old {prefix} publishes from {preparer.SharedRoot} (keeping the last {KeepReferences})";
             pruneRow.Start();
             var deleted = await Task.Run(() => preparer.PruneReferences(prefix, KeepReferences, pruneRow.AppendLine, ct), ct);

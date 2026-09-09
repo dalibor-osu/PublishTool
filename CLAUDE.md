@@ -23,6 +23,7 @@ It also updates itself from GitHub releases (`dalibor-osu/PublishTool`). The int
 
 ```
 PublishTool.slnx                  Solution (two projects)
+Directory.Build.props             Repo-wide MSBuild props: references SonarAnalyzer.CSharp in both projects
 PublishTool/                      The CLI (net10.0, PublishAot, InvariantGlobalization)
   Program.cs                      Entry point: Ctrl+C -> CancellationToken, parse args, run command, write log
   Commands/                       One class per command, [Command("name")] + ICommand<TOptions>
@@ -33,12 +34,18 @@ PublishTool/                      The CLI (net10.0, PublishAot, InvariantGlobali
     VersionCommand.cs / HelpCommand.cs
   Attributes/                     CommandAttribute, OptionAttribute (consumed by the source generator)
   Configuration/                  Config file handling
-    Config.cs                     Current config model (has a Version field)
-    ConfigHandler.cs              Interactive wizard for settings a directory does not have yet
+    Config.cs                     Current config model (format version 2): Version + Directories map of DirectorySettings
+    ConfigHandler.cs              Load(workingDir) = load file + wizard for missing settings, returns the DirectorySettings
     ConfigStore.cs                Load/save with version detection, migrator chain, backup of migrated files
-    ConfigVersioning.cs           IVersionedConfig, ConfigEnvelope, IConfigParser/ConfigParser<T>, ConfigMigrator<TFrom,TTo>, ConfigException
-    ConfigVersions.cs             Registry: Current version, parsers per version, migrators per step (+ recipe for a new version)
+    ConfigVersions.cs             Registry: Current version, parsers per version, migrators per step
+    ConfigParser.cs               IConfigParser + ConfigParser<TModel> (one per readable version)
+    ConfigMigrator.cs             IConfigMigrator + ConfigMigrator<TFrom,TTo> base class (one per version step)
+    ConfigEnvelope.cs             Only the Version field, read first to pick the parser
+    IVersionedConfig.cs           Implemented by the current model so the store can stamp the version
+    ConfigException.cs            User-facing config error, printed in red by Program.cs
     JsonContext.cs                Source-generated JSON metadata for every readable config model
+    Versions/ConfigV1.cs          Frozen snapshot of format version 1 (five parallel dictionaries); never edit
+    Migrations/ConfigV1ToV2.cs    Migrator 1 -> 2 (merges the dictionaries per directory)
   ProjectScanner.cs               Finds *.csproj recursively, detects Sdk / LegacyWeb / LegacyLibrary
   DependencyBuild.cs              Writes a temp traversal .proj that restores + builds all projects with /m
   PublishCommandBuilder.cs        Builds the MSBuild command line per project kind
@@ -65,6 +72,9 @@ Requirements: .NET SDK 10.x (`dotnet --version`), and MSBuild on `PATH` to actua
 ```powershell
 # Build (Debug produces PublishTool-dev.exe, version "dev")
 dotnet build PublishTool/PublishTool.csproj -c Debug
+
+# Full static analysis pass: forces a recompile so every Sonar (S####) and compiler warning is reported
+dotnet build PublishTool.slnx -c Debug --no-incremental
 
 # Run the dev binary
 PublishTool\bin\Debug\net10.0\PublishTool-dev.exe --help
@@ -112,18 +122,33 @@ The `update` command downloads exactly these asset names, so keep the naming in 
   `%APPDATA%\PublishTool\Logs\yyyy-MM-dd.log` only if something was logged, and the path is printed.
 - **Process output**: use `ProcessHelper.RunAsync`; it streams stdout/stderr lines to a callback and returns
   exit code plus captured output.
-- **Config**: `%APPDATA%\PublishTool\config.json`, keyed by the absolute working directory. Keys:
-  `Version`, `PublishDirectories`, `SharedDirectories`, `DeployDirectories`, `IgnoredDirectories`,
-  `PublishableProjects`. `ConfigHandler.Load` runs the interactive wizard for any missing key, so adding a new
-  per-directory setting means adding a dictionary to `Config`, a prompt in `HandleDirConfig`, and extending
-  `needsUpdate`. That is **not** a new format version.
+- **Config**: `%APPDATA%\PublishTool\config.json`: `Version` plus `Directories`, a map from the absolute
+  working directory to its `DirectorySettings` (`PublishDirectory`, `SharedDirectory`, `DeployDirectory`,
+  `IgnoredDirectories`, `PublishableProjects`). A setting that is `null`/absent was never asked for;
+  `ConfigHandler.Load(workingDir)` runs the wizard for it, saves, and returns the directory's
+  `DirectorySettings`. `DirectorySettings.IsComplete` (annotated with `MemberNotNullWhen`) tells consumers
+  everything is set; `ProjectScanner.Scan` takes the `DirectorySettings?` directly. Adding a new per-directory
+  setting means adding a nullable property to `DirectorySettings`, including it in `IsComplete`, and prompting
+  for it in `ConfigHandler.RunWizard`. That is **not** a new format version.
 - **Config format versions**: the file carries `Version` (files without it are version 1). `ConfigStore`
   reads the version, parses with that version's `ConfigParser`, runs the `ConfigMigrator` chain step by step
   to `ConfigVersions.Current`, then backs the old file up as `config.v<N>.json.bak` and saves the upgraded
   one. A file newer than the tool is rejected with a `ConfigException` (shown in red by `Program.cs`); there
   is no downgrade. Bump the version only when the old model can no longer read the file (renamed/reshaped
-  properties). The step-by-step recipe lives in the doc comment of `ConfigVersions`; the store validates
-  at startup that every version has a parser and every step a migrator, so mistakes fail on the first run.
+  properties). Version 2 is the worked example: version 1 stored five parallel dictionaries
+  (`Versions/ConfigV1.cs`), `Migrations/ConfigV1ToV2.cs` merges them per directory and leaves settings a
+  directory never had as `null`. The store validates at startup that every version has a parser and every
+  step a migrator, so registry mistakes fail on the first run. Recipe for a new version N:
+  1. Copy the current `Config` (and `DirectorySettings`) to `Versions/ConfigV<N-1>.cs` as a frozen snapshot:
+     plain classes, no `IVersionedConfig`, `Version` as a plain int, no helpers.
+  2. Change `Config` to the new shape, set `ConfigVersions.Current = N`, fix the wizard and the consumers.
+  3. Register the snapshot in `JsonContext`, add `new ConfigParser<ConfigV<N-1>>(N-1, JsonContext.Default.ConfigV<N-1>)`
+     to `ConfigVersions.Parsers`, and change the current model's parser entry to version N.
+  4. Add `Migrations/ConfigV<N-1>ToV<N>.cs` deriving from `ConfigMigrator<ConfigV<N-1>, Config>` and add it to
+     `ConfigVersions.Migrators`. Older migrators keep targeting their snapshot (`ConfigMigrator<ConfigV1, ConfigV2>`
+     once version 3 exists), so migration always runs one step at a time.
+  5. Verify with a throwaway console project that includes `Configuration/**/*.cs` (minus `ConfigHandler.cs`)
+     and feeds a real old file through a `ConfigStore<Config>` pointed at a sandbox path.
 - **Project kinds** (`ProjectScanner.DetectKind`): SDK-style projects are published with
   `/t:Publish /p:RuntimeIdentifier=win-x64 /p:SelfContained=false`; legacy web projects
   (`Microsoft.WebApplication.targets`) use `DeployOnBuild` + `WebPublishMethod=FileSystem`; other legacy
@@ -132,7 +157,18 @@ The `update` command downloads exactly these asset names, so keep the naming in 
 - **Code style**: `.editorconfig` at the root, file-scoped namespaces, primary constructors, collection
   expressions, `Lock` type, C# 14 `extension` blocks (see `StringExtensions`). Nullable is enabled and the
   build should stay warning-free. Source files use CRLF line endings (git `autocrlf=true`); if a tool writes
-  LF, convert back so the working copy stays consistent.
+  LF, convert back so the working copy stays consistent. No XML doc comments and no explanatory comments in
+  code (the owner's preference); names carry the meaning, and anything that needs explaining goes into this
+  file instead. Interface members carry an explicit `public` modifier (see `ICommand`), and classes implement
+  them as normal `public` members, never with explicit interface implementation syntax (`void IFoo.Bar()`).
+  Keep methods under Sonar's cognitive complexity limit of 15 (S3776) by splitting them, as in
+  `ConfigHandler.RunWizard`.
+- **Static analysis**: `SonarAnalyzer.CSharp` (the same rules SonarQube for IDE shows in Rider) is referenced from
+  `Directory.Build.props` and runs on every build, so Sonar findings appear as `S####` compiler warnings.
+  **Before finishing any work, run the full analysis build from the commands above and make sure it reports
+  0 warnings.** Fix findings rather than silencing them. For a real false positive, suppress as narrowly as
+  possible (`[SuppressMessage]` with a `Justification` on the member, see `Emitter.cs`); a rule that does not
+  fit this project at all is disabled in the Sonar section of `.editorconfig` with a comment saying why.
 - **Known gap**: `update -v/--version` is parsed but `UpdateCommand` never uses `Options.Version`
   (it always installs the latest full or pre-release version).
 

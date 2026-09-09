@@ -5,23 +5,19 @@ namespace PublishTool;
 
 public static partial class ProjectScanner
 {
-    public static List<DotnetProject> Scan(Config config, string path, bool all = false)
+    public static List<DotnetProject> Scan(DirectorySettings? settings, string path, bool all = false)
     {
         if (!Directory.Exists(path))
         {
             return [];
         }
 
+        string[] ignoredDirectories = settings?.IgnoredDirectories ?? [];
+        string[] publishableProjects = settings?.PublishableProjects ?? [];
+
         var projects = new List<DotnetProject>();
         foreach (string file in Directory.GetFiles(path, "*.csproj", new EnumerationOptions { RecurseSubdirectories = true }))
         {
-            string[] ignoredDirectories =
-                config.IgnoredDirectories.TryGetValue(path, out string[]? foundIgnoredDirs) ? foundIgnoredDirs : [];
-            string[] publishableProjects =
-                config.PublishableProjects.TryGetValue(path, out string[]? foundPublishableProjects)
-                    ? foundPublishableProjects
-                    : [];
-
             bool isPublishable = all || publishableProjects.Any(pp => file.EndsWith($"{pp}.csproj"));
             bool isIgnored = ignoredDirectories.Any(dir => file.Contains(dir));
 

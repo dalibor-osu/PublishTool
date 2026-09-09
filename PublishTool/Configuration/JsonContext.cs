@@ -1,12 +1,10 @@
 using System.Text.Json.Serialization;
+using PublishTool.Configuration.Versions;
 
 namespace PublishTool.Configuration;
 
-/// <summary>
-/// Source-generated JSON metadata (required for Native AOT). Every config model that can still be read, i.e. the current one and
-/// each frozen older version, has to be registered here.
-/// </summary>
-[JsonSourceGenerationOptions(WriteIndented = true)]
+[JsonSourceGenerationOptions(WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(ConfigEnvelope))]
+[JsonSerializable(typeof(ConfigV1))]
 [JsonSerializable(typeof(Config))]
 public partial class JsonContext : JsonSerializerContext;
