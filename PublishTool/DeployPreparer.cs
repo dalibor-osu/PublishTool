@@ -1,15 +1,27 @@
 using System.Globalization;
+using System.IO.Compression;
 using PublishTool.Helpers;
 
 namespace PublishTool;
 
+/// <summary>
+/// Prepares a deploy: compares the local publish with the previous reference of the branch and produces a directory with the
+/// changed files. References live in the shared directory purely as zip archives ("prefix_timestamp.zip", project directories
+/// at the archive root); all extraction and comparison happens locally so the shared directory only ever sees whole-file copies.
+/// </summary>
 public sealed class DeployPreparer(string sharedRoot, string deployRoot, string publishRoot, IReadOnlyList<string> projectNames)
 {
     private const string FallbackPrefix = "DEPLOY";
     private const string TimestampFormat = "yyyy-MM-dd_HH-mm-ss";
     private const int TimestampLength = 19;
+    private const string ArchiveExtension = ".zip";
     private const string UploadSuffix = ".uploading";
+    private const string WorkSuffix = ".tmp";
+    private const string PreviousArchiveName = "previous.zip";
+    private const string PreviousDirectoryName = "previous";
     private const int ReportEvery = 25;
+    private const int CopyBufferSize = 4 * 1024 * 1024;
+    private const CompressionLevel ArchiveCompression = CompressionLevel.Fastest;
     private const string LegacyChangesDirectoryName = "Deploy";
 
     public string SharedRoot { get; } = sharedRoot;
@@ -38,26 +50,85 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
     public static string DirectoryName(string prefix, DateTimeOffset time) =>
         $"{prefix}_{time.ToString(TimestampFormat, CultureInfo.InvariantCulture)}";
 
+    /// <summary>Local directory that receives the changed files.</summary>
     public string DeployPath(string name) => Path.Combine(DeployRoot, name);
 
-    public string ReferencePath(string name) => Path.Combine(SharedRoot, name);
+    /// <summary>Local scratch directory for the downloaded previous reference and the new archive; deleted when done.</summary>
+    public string WorkPath(string name) => Path.Combine(DeployRoot, name + WorkSuffix);
 
+    /// <summary>Local path of the new reference archive before it is uploaded.</summary>
+    public string ArchivePath(string name) => Path.Combine(WorkPath(name), name + ArchiveExtension);
+
+    /// <summary>Final path of the reference archive in the shared directory.</summary>
+    public string ReferencePath(string name) => Path.Combine(SharedRoot, name + ArchiveExtension);
+
+    /// <summary>Temporary name the archive is uploaded under before being renamed to the reference path.</summary>
+    public static string UploadPath(string reference) => reference + UploadSuffix;
+
+    /// <summary>
+    /// Finds the newest reference archive of the prefix. Throws when a newer reference exists as a directory from the previous
+    /// workflow, because silently ignoring it would produce a deploy that contains everything.
+    /// </summary>
     public string? FindPreviousReference(string prefix)
     {
-        string? best = null;
-        DateTime bestTime = DateTime.MinValue;
-        foreach (string directory in Directory.EnumerateDirectories(SharedRoot))
+        string? bestArchive = null;
+        DateTime bestArchiveTime = DateTime.MinValue;
+        string? legacy = null;
+        DateTime legacyTime = DateTime.MinValue;
+        foreach (var entry in new DirectoryInfo(SharedRoot).EnumerateFileSystemInfos())
         {
-            if (TryParseName(Path.GetFileName(directory), out string candidatePrefix, out DateTime time)
-                && string.Equals(candidatePrefix, prefix, StringComparison.OrdinalIgnoreCase)
-                && time > bestTime)
+            bool isDirectory = entry is DirectoryInfo;
+            if (!isDirectory && !string.Equals(entry.Extension, ArchiveExtension, StringComparison.OrdinalIgnoreCase))
             {
-                best = directory;
-                bestTime = time;
+                continue;
+            }
+
+            string name = isDirectory ? entry.Name : Path.GetFileNameWithoutExtension(entry.Name);
+            if (!TryParseName(name, out string candidatePrefix, out DateTime time)
+                || !string.Equals(candidatePrefix, prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (isDirectory)
+            {
+                if (time > legacyTime)
+                {
+                    legacy = entry.FullName;
+                    legacyTime = time;
+                }
+            }
+            else if (time > bestArchiveTime)
+            {
+                bestArchive = entry.FullName;
+                bestArchiveTime = time;
             }
         }
 
-        return best;
+        if (legacy is not null && legacyTime > bestArchiveTime)
+        {
+            throw new InvalidOperationException(
+                $"{legacy} is a reference from the old workflow that stored the publish as a directory. Compress its contents into "
+                + $"{legacy}{ArchiveExtension} (project directories at the root of the archive) and delete the directory, or delete "
+                + "the directory if the reference is no longer needed.");
+        }
+
+        return bestArchive;
+    }
+
+    /// <summary>
+    /// Copies the previous reference archive into the work directory and extracts it there. Returns the extracted directory,
+    /// laid out like the publish root (one subdirectory per project).
+    /// </summary>
+    public static (string Directory, int Files) Download(string reference, string workDirectory, Action<string> report, CancellationToken ct)
+    {
+        Directory.CreateDirectory(workDirectory);
+        string archive = Path.Combine(workDirectory, PreviousArchiveName);
+        string extracted = Path.Combine(workDirectory, PreviousDirectoryName);
+        CopyWithProgress(reference, archive, report, ct);
+        int files = Extract(archive, extracted, report, ct);
+        File.Delete(archive);
+        return (extracted, files);
     }
 
     public int CollectChanges(string deployDirectory, string? previous, Action<string> report, CancellationToken ct)
@@ -86,78 +157,174 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
         return changed;
     }
 
-    public string Upload(string reference, Action<string> report, CancellationToken ct)
+    /// <summary>
+    /// Compresses the publish output of every published project into the archive. Projects that exist in the previous reference
+    /// but were not published this time are carried over from it so the new reference stays complete.
+    /// </summary>
+    public ArchiveInfo CreateArchive(string archive, string? previous, Action<string> report, CancellationToken ct)
     {
-        string uploading = reference + UploadSuffix;
-        if (Directory.Exists(uploading))
+        Directory.CreateDirectory(Path.GetDirectoryName(archive)!);
+        File.Delete(archive);
+        int total = 0;
+        var carried = new List<string>();
+        using (var zip = ZipFile.Open(archive, ZipArchiveMode.Create))
         {
-            Directory.Delete(uploading, recursive: true);
-        }
-
-        Directory.CreateDirectory(uploading);
-        foreach (string project in projectNames)
-        {
-            string source = PublishedProjectDirectory(project);
-            Directory.CreateDirectory(Path.Combine(uploading, project));
-            string[] files = Directory.GetFiles(source, "*", SearchOption.AllDirectories);
-            for (int i = 0; i < files.Length; i++)
+            foreach (string project in projectNames)
             {
-                ct.ThrowIfCancellationRequested();
-                CopyFile(files[i], Path.Combine(uploading, project, Path.GetRelativePath(source, files[i])));
-                if ((i + 1) % ReportEvery == 0 || i == files.Length - 1)
+                total += AddProject(zip, project, PublishedProjectDirectory(project), report, ct);
+            }
+
+            if (previous is not null)
+            {
+                foreach (string directory in Directory.EnumerateDirectories(previous))
                 {
-                    report($"{project}: {i + 1}/{files.Length} files");
+                    string project = Path.GetFileName(directory);
+                    if (string.Equals(project, LegacyChangesDirectoryName, StringComparison.OrdinalIgnoreCase)
+                        || projectNames.Contains(project, StringComparer.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    int count = AddProject(zip, project, directory, _ => { }, ct);
+                    report($"{project}: {count} files carried over from the previous publish");
+                    total += count;
+                    carried.Add(project);
                 }
             }
         }
 
+        return new ArchiveInfo(archive, total, new FileInfo(archive).Length, carried);
+    }
+
+    /// <summary>Copies the archive to the shared directory under its temporary upload name and returns that path.</summary>
+    public static string Upload(string archive, string reference, Action<string> report, CancellationToken ct)
+    {
+        string uploading = UploadPath(reference);
+        Directory.CreateDirectory(Path.GetDirectoryName(reference)!);
+        CopyWithProgress(archive, uploading, report, ct);
         return uploading;
     }
 
-    public IReadOnlyList<string> CarryForwardMissingProjects(string target, string previous, Action<string> report, CancellationToken ct)
+    public static void Commit(string uploading, string reference) => File.Move(uploading, reference);
+
+    public static void TryDelete(string? path)
     {
-        var carried = new List<string>();
-        foreach (string directory in Directory.EnumerateDirectories(previous))
-        {
-            string project = Path.GetFileName(directory);
-            if (string.Equals(project, LegacyChangesDirectoryName, StringComparison.OrdinalIgnoreCase)
-                || projectNames.Contains(project, StringComparer.OrdinalIgnoreCase)
-                || Directory.Exists(Path.Combine(target, project)))
-            {
-                continue;
-            }
-
-            int count = 0;
-            foreach (string file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
-            {
-                ct.ThrowIfCancellationRequested();
-                CopyFile(file, Path.Combine(target, project, Path.GetRelativePath(directory, file)));
-                count++;
-            }
-
-            report($"{project}: {count} files carried over from {Path.GetFileName(previous)}");
-            carried.Add(project);
-        }
-
-        return carried;
-    }
-
-    public static void Commit(string uploading, string reference) => Directory.Move(uploading, reference);
-
-    public static void TryDelete(string? directory)
-    {
-        if (directory is null || !Directory.Exists(directory))
+        if (path is null)
         {
             return;
         }
 
         try
         {
-            Directory.Delete(directory, recursive: true);
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+            else if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
         catch (Exception e)
         {
-            Logger.LogWarning($"Could not delete {directory}:\n{e}");
+            Logger.LogWarning($"Could not delete {path}:\n{e}");
+        }
+    }
+
+    public static string FormatSize(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double value = bytes;
+        int unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+
+        return unit == 0
+            ? $"{bytes} {units[unit]}"
+            : $"{value.ToString("0.#", CultureInfo.InvariantCulture)} {units[unit]}";
+    }
+
+    public readonly record struct ArchiveInfo(string Path, int Files, long Size, IReadOnlyList<string> Carried);
+
+    private static int AddProject(ZipArchive zip, string project, string source, Action<string> report, CancellationToken ct)
+    {
+        string[] files = Directory.GetFiles(source, "*", SearchOption.AllDirectories);
+        for (int i = 0; i < files.Length; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            string entryName = Path.Combine(project, Path.GetRelativePath(source, files[i])).Replace('\\', '/');
+            zip.CreateEntryFromFile(files[i], entryName, ArchiveCompression);
+            if ((i + 1) % ReportEvery == 0 || i == files.Length - 1)
+            {
+                report($"{project}: {i + 1}/{files.Length} files");
+            }
+        }
+
+        return files.Length;
+    }
+
+    private static int Extract(string archive, string target, Action<string> report, CancellationToken ct)
+    {
+        target = Path.GetFullPath(target);
+        string targetPrefix = Path.EndsInDirectorySeparator(target) ? target : target + Path.DirectorySeparatorChar;
+        Directory.CreateDirectory(target);
+        int extracted = 0;
+        using var zip = ZipFile.OpenRead(archive);
+        int count = zip.Entries.Count;
+        foreach (var entry in zip.Entries)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (entry.FullName.EndsWith('/'))
+            {
+                continue;
+            }
+
+            string destination = Path.GetFullPath(Path.Combine(target, entry.FullName));
+            if (!destination.StartsWith(targetPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException($"Archive entry {entry.FullName} points outside of {target}");
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            entry.ExtractToFile(destination, overwrite: true);
+            extracted++;
+            if (extracted % ReportEvery == 0 || extracted == count)
+            {
+                report($"{extracted}/{count} files extracted");
+            }
+        }
+
+        return extracted;
+    }
+
+    private static void CopyWithProgress(string source, string destination, Action<string> report, CancellationToken ct)
+    {
+        long total = new FileInfo(source).Length;
+        using var reader = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, CopyBufferSize, FileOptions.SequentialScan);
+        using var writer = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, CopyBufferSize, FileOptions.SequentialScan);
+        byte[] buffer = new byte[CopyBufferSize];
+        long copied = 0;
+        int lastPercent = -1;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            int read = reader.Read(buffer, 0, buffer.Length);
+            if (read == 0)
+            {
+                break;
+            }
+
+            writer.Write(buffer, 0, read);
+            copied += read;
+            int percent = total == 0 ? 100 : (int)(copied * 100 / total);
+            if (percent != lastPercent)
+            {
+                lastPercent = percent;
+                report($"{FormatSize(copied)}/{FormatSize(total)} ({percent}%)");
+            }
         }
     }
 

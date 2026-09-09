@@ -77,8 +77,10 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
                 projectsToPublish.Select(p => p.Name).ToList());
             deployStep = new DeployStep(
                 preparer,
+                display.Add("Downloading the previous publish of this branch from the shared directory"),
                 display.Add("Collecting changed files into the deploy directory"),
-                display.Add("Copying the full publish to the shared directory"));
+                display.Add("Compressing the full publish into an archive"),
+                display.Add("Uploading the archive to the shared directory"));
         }
 
         var work = PublishAll(projectsToPublish, configuration, buildRow, publishRows, deployStep, ct);
@@ -114,7 +116,10 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         AnsiConsole.Write(EraseBelow);
     }
 
-    private sealed record DeployStep(DeployPreparer Preparer, JobRow ChangesRow, JobRow UploadRow);
+    private sealed record DeployStep(DeployPreparer Preparer, JobRow DownloadRow, JobRow ChangesRow, JobRow ArchiveRow, JobRow UploadRow)
+    {
+        public IEnumerable<JobRow> Rows => [DownloadRow, ChangesRow, ArchiveRow, UploadRow];
+    }
 
     private async Task PublishAll(
         IReadOnlyList<DotnetProject> projects,
@@ -160,43 +165,71 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         }
 
         var state = ct.IsCancellationRequested ? JobState.Cancelled : JobState.Skipped;
-        deployStep.ChangesRow.Finish(state, reason);
-        deployStep.UploadRow.Finish(state, reason);
+        foreach (var row in deployStep.Rows)
+        {
+            row.Finish(state, reason);
+        }
     }
 
     private async Task PrepareDeploy(DeployStep step, CancellationToken ct)
     {
-        var (preparer, changesRow, uploadRow) = step;
+        var (preparer, downloadRow, changesRow, archiveRow, uploadRow) = step;
         string? name = null;
+        string? work = null;
         string? deployDirectory = null;
         string? uploading = null;
         try
         {
             string prefix = await DeployPreparer.ResolvePrefixAsync(Options.WorkingDirectory, ct);
             name = DeployPreparer.DirectoryName(prefix, DateTimeOffset.Now);
-            string? previous = preparer.FindPreviousReference(prefix);
+            string? previousReference = preparer.FindPreviousReference(prefix);
+            work = preparer.WorkPath(name);
 
+            // 1. Bring the previous reference archive to the local machine and extract it there.
+            string? previous = null;
+            if (previousReference is null)
+            {
+                downloadRow.Finish(JobState.Succeeded, "no previous publish of this branch in the shared directory, everything is new");
+            }
+            else
+            {
+                string reference = previousReference;
+                string workDirectory = work;
+                downloadRow.Name = $"Downloading {Path.GetFileName(reference)} and extracting it into {workDirectory}";
+                downloadRow.Start();
+                (previous, int files) = await Task.Run(() => DeployPreparer.Download(reference, workDirectory, downloadRow.AppendLine, ct), ct);
+                downloadRow.Finish(JobState.Succeeded, $"{files} files");
+            }
+
+            // 2. Compare the local publish with the extracted previous reference.
             deployDirectory = preparer.DeployPath(name);
-            changesRow.Name = previous is null
-                ? $"Collecting changed files into {deployDirectory} (no previous publish in the shared directory, everything is new)"
-                : $"Collecting changed files into {deployDirectory} (compared with {Path.GetFileName(previous)})";
+            changesRow.Name = previousReference is null
+                ? $"Collecting changed files into {deployDirectory} (everything is new)"
+                : $"Collecting changed files into {deployDirectory} (compared with {Path.GetFileName(previousReference)})";
             changesRow.Start();
             int changed = await Task.Run(() => preparer.CollectChanges(deployDirectory, previous, changesRow.AppendLine, ct), ct);
             changesRow.Finish(JobState.Succeeded, $"{changed} files");
             deployDirectory = null;
 
-            string reference = preparer.ReferencePath(name);
-            uploadRow.Name = $"Copying the full publish to {reference}";
+            // 3. Build the new reference archive locally, carrying over projects that were not published this time.
+            string archive = preparer.ArchivePath(name);
+            archiveRow.Name = $"Compressing the full publish into {archive}";
+            archiveRow.Start();
+            var archiveInfo = await Task.Run(() => preparer.CreateArchive(archive, previous, archiveRow.AppendLine, ct), ct);
+            archiveRow.Finish(JobState.Succeeded, archiveInfo.Carried.Count == 0
+                ? $"{archiveInfo.Files} files, {DeployPreparer.FormatSize(archiveInfo.Size)}"
+                : $"{archiveInfo.Files} files, {DeployPreparer.FormatSize(archiveInfo.Size)}, {archiveInfo.Carried.Count} unpublished "
+                  + $"project(s) carried over from {Path.GetFileName(previousReference)}");
+
+            // 4. Upload the single archive; it becomes the reference for the next publish.
+            string newReference = preparer.ReferencePath(name);
+            uploadRow.Name = $"Uploading {Path.GetFileName(newReference)} to {preparer.SharedRoot}";
             uploadRow.Start();
-            uploading = await Task.Run(() => preparer.Upload(reference, uploadRow.AppendLine, ct), ct);
-            var carried = previous is null
-                ? []
-                : await Task.Run(() => preparer.CarryForwardMissingProjects(uploading, previous, uploadRow.AppendLine, ct), ct);
-            DeployPreparer.Commit(uploading, reference);
+            uploading = DeployPreparer.UploadPath(newReference);
+            await Task.Run(() => DeployPreparer.Upload(archive, newReference, uploadRow.AppendLine, ct), ct);
+            DeployPreparer.Commit(uploading, newReference);
             uploading = null;
-            uploadRow.Finish(JobState.Succeeded, carried.Count == 0
-                ? null
-                : $"{carried.Count} unpublished project(s) carried over from {Path.GetFileName(previous)}");
+            uploadRow.Finish(JobState.Succeeded, DeployPreparer.FormatSize(archiveInfo.Size));
         }
         catch (OperationCanceledException)
         {
@@ -212,11 +245,12 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         {
             DeployPreparer.TryDelete(deployDirectory);
             DeployPreparer.TryDelete(uploading);
+            DeployPreparer.TryDelete(work);
         }
 
         void FinishUnfinished(JobState state, string? detail)
         {
-            foreach (var row in new[] { changesRow, uploadRow }.Where(r => !r.IsFinished))
+            foreach (var row in step.Rows.Where(r => !r.IsFinished))
             {
                 row.Finish(state, detail);
             }

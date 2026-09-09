@@ -13,8 +13,8 @@ public class PublishCommandOptions
 
     [Option("-c", "--complete", Description = "After publishing, compare the publish with the previous one of the current git "
         + "branch in the shared directory and create a directory named after the branch and time (e.g. PROD_2026-09-03_15-03-43) "
-        + "in the deploy directory with only the changed files. The full publish is stored under the same name in the shared "
-        + "directory as the reference for the next comparison")]
+        + "in the deploy directory with only the changed files. The full publish is stored as a zip archive of the same name in the "
+        + "shared directory as the reference for the next comparison")]
     public bool Complete { get; set; } = false;
 
     internal static bool ParseWorkingDirectory(string value, PublishCommandOptions options, out string? error)

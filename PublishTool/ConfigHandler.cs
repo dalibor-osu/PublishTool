@@ -53,8 +53,8 @@ public static class ConfigHandler
             string deployDefault = hadSharedDirectory ? config.DeployDirectories.GetValueOrDefault(path, string.Empty) : string.Empty;
 
             config.SharedDirectories[path] = AnsiConsole.Ask(
-                "Enter [green]shared directory[/] path (usually a network share; every complete publish stores its full output "
-                + "there as the reference the next one is compared with)",
+                "Enter [green]shared directory[/] path (usually a network share; every complete publish stores its full output there "
+                + "as a zip archive that the next one is compared with)",
                 sharedDefault);
             config.DeployDirectories[path] = AnsiConsole.Ask(
                 "Enter [green]deploy directory[/] path (local; every complete publish creates a directory there with only the "
