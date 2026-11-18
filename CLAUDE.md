@@ -8,12 +8,12 @@ Guidance for AI agents (and humans) working in this repository.
 
 ## What PublishTool is
 
-PublishTool is a Windows-focused, Native AOT compiled .NET 10 console tool that publishes one or more .NET
-projects from a repository with MSBuild and, optionally, prepares an incremental deploy package:
+PublishTool is a Windows-focused, Native AOT compiled .NET 11 console tool that publishes one or more .NET
+projects from a repository with MSBuild and, unless `-l/--local` is given, prepares an incremental deploy package:
 
 1. Builds all selected projects and their project references once (via a generated MSBuild traversal project).
 2. Publishes every selected project in parallel into `<publish dir>\<ProjectName>`.
-3. With `--complete`: downloads the previous full publish of the current git branch from a shared network
+3. Without `--local`: downloads the previous full publish of the current git branch from a shared network
    directory (stored there as a single zip), extracts and compares it locally, writes only the changed files
    into a local deploy directory, and uploads a new zip of the full publish as the reference for next time.
 
@@ -24,7 +24,7 @@ It also updates itself from GitHub releases (`dalibor-osu/PublishTool`). The int
 ```
 PublishTool.slnx                  Solution (two projects)
 Directory.Build.props             Repo-wide MSBuild props: references SonarAnalyzer.CSharp in both projects
-PublishTool/                      The CLI (net10.0, PublishAot, InvariantGlobalization)
+PublishTool/                      The CLI (net11.0, PublishAot, InvariantGlobalization)
   Program.cs                      Entry point: Ctrl+C -> CancellationToken, parse args, run command, write log
   Commands/                       One class per command, [Command("name")] + ICommand<TOptions>
     Options/                      One options class per command, properties marked with [Option(...)]
@@ -49,7 +49,7 @@ PublishTool/                      The CLI (net10.0, PublishAot, InvariantGlobali
   ProjectScanner.cs               Finds *.csproj recursively, detects Sdk / LegacyWeb / LegacyLibrary
   DependencyBuild.cs              Writes a temp traversal .proj that restores + builds all projects with /m
   PublishCommandBuilder.cs        Builds the MSBuild command line per project kind
-  DeployPreparer.cs               The --complete deploy logic (download, compare, zip, upload)
+  DeployPreparer.cs               The deploy logic, skipped with --local (download, compare, zip, upload)
   Console/JobDisplay.cs           JobRow/JobDisplay: the redrawn progress table (spinner, tail of output)
   GitHub/                         GitHubClient (releases API), ReleaseVersion (semver + rc parsing/compare)
   Helpers/                        ProcessHelper (run process, stream output), EnvironmentHelper, OptionParsers
@@ -66,7 +66,7 @@ There are no automated tests in the repo. Verify changes by building and by runn
 
 ## Development commands
 
-Requirements: .NET SDK 10.x (`dotnet --version`), and MSBuild on `PATH` to actually run `publish`
+Requirements: .NET SDK 11.x (`dotnet --version`), and MSBuild on `PATH` to actually run `publish`
 (Visual Studio / Build Tools; the tool calls `MSBuild` by name, not `dotnet build`).
 
 ```powershell
@@ -77,9 +77,9 @@ dotnet build PublishTool/PublishTool.csproj -c Debug
 dotnet build PublishTool.slnx -c Debug --no-incremental
 
 # Run the dev binary
-PublishTool\bin\Debug\net10.0\PublishTool-dev.exe --help
-PublishTool\bin\Debug\net10.0\PublishTool-dev.exe publish -dir C:\path\to\repo
-PublishTool\bin\Debug\net10.0\PublishTool-dev.exe config -dir C:\path\to\repo
+PublishTool\bin\Debug\net11.0\PublishTool-dev.exe --help
+PublishTool\bin\Debug\net11.0\PublishTool-dev.exe publish -dir C:\path\to\repo
+PublishTool\bin\Debug\net11.0\PublishTool-dev.exe config -dir C:\path\to\repo
 
 # Native AOT publish like CI does (needs the VC++ toolchain on Windows)
 dotnet publish PublishTool/PublishTool.csproj -c Release -r win-x64 --self-contained -p:PublishAot=true -p:BuildVersion=1.2.3 -o artifacts/win-x64
@@ -172,7 +172,9 @@ The `update` command downloads exactly these asset names, so keep the naming in 
 - **Known gap**: `update -v/--version` is parsed but `UpdateCommand` never uses `Options.Version`
   (it always installs the latest full or pre-release version).
 
-## The `--complete` deploy workflow (DeployPreparer)
+## The deploy workflow (DeployPreparer)
+
+Runs after every publish unless `-l/--local` is given (the flag replaced the old opt-in `-c/--complete`).
 
 Naming: `<prefix>_<yyyy-MM-dd_HH-mm-ss>` where prefix is the sanitized current git branch (`DEPLOY` if
 not in a git repo). The shared directory contains **only zip files** named `<name>.zip`, project
@@ -220,7 +222,7 @@ Get-ChildItem $shared -Directory | Where-Object { $_.Name -match '_\d{4}-\d{2}-\
 ```
 PublishTool [command] [options]
 
-  publish  (default)  -dir <path>  -a  -c|--complete
+  publish  (default)  -dir <path>  -a  -l|--local
   config              -dir <path>
   update              -pre|--pre-release  --fetch  (-v|--version <version>: currently ignored)
   version
@@ -233,9 +235,10 @@ PublishTool [command] [options]
    ignore while scanning (default `.git, .claude`), and which projects are publishable. Re-run the wizard
    with `PublishTool config -dir C:\repo`.
 2. **Publish**: `PublishTool publish` prompts for projects and configuration (Release/Debug), then shows the
-   build row, one row per project and, with `--complete`, the five deploy rows. `-a` publishes all
-   publishable projects in Release without prompts. Exit code 0 on success, 1 on any failure.
-3. **Deploy**: after `--complete`, hand `<deploy dir>\<branch>_<timestamp>` to whoever deploys; it contains
+   build row, one row per project and the five deploy rows. `-a` publishes all publishable projects in
+   Release without prompts. `-l/--local` only publishes locally and skips the deploy rows. Exit code 0 on
+   success, 1 on any failure.
+3. **Deploy**: after a publish without `--local`, hand `<deploy dir>\<branch>_<timestamp>` to whoever deploys; it contains
    only the files that differ from the previous publish of the same branch.
 4. **Update the tool**: `PublishTool update` (or `update --fetch` to only check). Dev builds cannot update.
    The previous executable is kept as `PublishTool.exe.old` and removed on the next start.

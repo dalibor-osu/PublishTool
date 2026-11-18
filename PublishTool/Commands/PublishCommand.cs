@@ -74,7 +74,7 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
             .ToList();
 
         DeployStep? deployStep = null;
-        if (Options.Complete)
+        if (!Options.Local)
         {
             var preparer = new DeployPreparer(
                 settings.SharedDirectory,

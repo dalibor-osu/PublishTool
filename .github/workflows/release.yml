@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DOTNET_VERSION: "10.0.x"
+  DOTNET_VERSION: "11.0.x"
   PROJECT: PublishTool/PublishTool.csproj
   APP_NAME: PublishTool
   DOTNET_NOLOGO: "true"
