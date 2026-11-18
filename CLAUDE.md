@@ -241,4 +241,8 @@ PublishTool [command] [options]
 3. **Deploy**: after a publish without `--local`, hand `<deploy dir>\<branch>_<timestamp>` to whoever deploys; it contains
    only the files that differ from the previous publish of the same branch.
 4. **Update the tool**: `PublishTool update` (or `update --fetch` to only check). Dev builds cannot update.
-   The previous executable is kept as `PublishTool.exe.old` and removed on the next start.
+   The previous executable is kept as `PublishTool.exe.old` and removed on the next start. Without `-pre` the
+   target is the newest GitHub release not marked as a pre-release; with `-pre` it is the newest release of
+   any kind, so a full release wins over older pre-releases. Users running a pre-release are asked whether to
+   include pre-releases. If the installed version is newer than the target (a pre-release ahead of the latest
+   full release), `--fetch` prints a downgrade warning and `update` asks before downgrading (default no).

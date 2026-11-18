@@ -137,12 +137,12 @@ public partial record ReleaseVersion : IComparable<ReleaseVersion>
 
         if (IsPreRelease && !other.IsPreRelease)
         {
-            return 1;
+            return -1;
         }
 
         if (!IsPreRelease && other.IsPreRelease)
         {
-            return -1;
+            return 1;
         }
 
         if (!IsPreRelease && !other.IsPreRelease)

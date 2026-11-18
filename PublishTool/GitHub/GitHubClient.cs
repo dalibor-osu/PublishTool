@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -16,53 +15,46 @@ public class GitHubClient
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github.v3+json"));
     }
 
-    public async Task<Result<ReleaseVersion>> GetLatestFullVersionAsync(CancellationToken ct)
+    public Task<Result<ReleaseVersion>> GetLatestFullVersionAsync(CancellationToken ct) => GetLatestVersionAsync(false, ct);
+
+    public Task<Result<ReleaseVersion>> GetLatestVersionIncludingPreReleaseAsync(CancellationToken ct) => GetLatestVersionAsync(true, ct);
+
+    private async Task<Result<ReleaseVersion>> GetLatestVersionAsync(bool includePreReleases, CancellationToken ct)
     {
         try
         {
-            var response = await _httpClient.GetAsync("releases/latest", ct);
-            if (response.StatusCode == HttpStatusCode.NotFound)
-            {
-                return "No full release found";
-            }
-
+            var response = await _httpClient.GetAsync("releases?per_page=100", ct);
             response.EnsureSuccessStatusCode();
             string json = await response.Content.ReadAsStringAsync(ct);
             var jsonRoot = JsonDocument.Parse(json).RootElement;
-            return ReleaseVersion.Parse(jsonRoot);
-        }
-        catch (TaskCanceledException)
-        {
-            return string.Empty;
-        }
-        catch (Exception e)
-        {
-            Logger.LogError(e.ToString());
-            return "An error occurred while fetching the latest version";
-        }
-    }
 
-    public async Task<Result<ReleaseVersion>> GetLatestVersionIncludingPreReleaseAsync(CancellationToken ct)
-    {
-        try
-        {
-            var response = await _httpClient.GetAsync("releases", ct);
-            response.EnsureSuccessStatusCode();
-            string json = await response.Content.ReadAsStringAsync(ct);
-            var jsonRoot = JsonDocument.Parse(json).RootElement;
-            var versions = new List<ReleaseVersion>(jsonRoot.GetArrayLength());
+            ReleaseVersion? latest = null;
             foreach (var element in jsonRoot.EnumerateArray())
             {
-                var currentVersionResult = ReleaseVersion.Parse(element);
-                if (!currentVersionResult.IsSuccess)
+                if (!IsCandidate(element, includePreReleases))
                 {
-                    return currentVersionResult.Error;
+                    continue;
                 }
 
-                versions.Add(currentVersionResult.Value);
+                var versionResult = ReleaseVersion.Parse(element);
+                if (!versionResult.IsSuccess)
+                {
+                    Logger.LogWarning($"Skipping release '{element.GetProperty("tag_name")}': {versionResult.Error}");
+                    continue;
+                }
+
+                if (latest == null || versionResult.Value > latest)
+                {
+                    latest = versionResult.Value;
+                }
             }
 
-            return versions.OrderByDescending(v => v).First();
+            if (latest == null)
+            {
+                return includePreReleases ? "No release found" : "No full release found";
+            }
+
+            return latest;
         }
         catch (TaskCanceledException)
         {
@@ -101,5 +93,15 @@ public class GitHubClient
             Logger.LogError(e.ToString());
             return "An error occurred while downloading the asset";
         }
+    }
+
+    private static bool IsCandidate(JsonElement release, bool includePreReleases)
+    {
+        if (release.TryGetProperty("draft", out var draft) && draft.GetBoolean())
+        {
+            return false;
+        }
+
+        return includePreReleases || !(release.TryGetProperty("prerelease", out var preRelease) && preRelease.GetBoolean());
     }
 }

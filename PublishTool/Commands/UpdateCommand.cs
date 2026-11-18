@@ -47,22 +47,19 @@ public class UpdateCommand(UpdateCommandOptions options) : ICommand<UpdateComman
     {
         var client = new GitHubClient();
         var currentVersion = ReleaseVersion.Current;
-        string preRelease = Options.PreRelease ? "pre-release" : "full";
 
         if (currentVersion?.IsPreRelease == true && !Options.PreRelease)
         {
-            preRelease = await AnsiConsole.ConfirmAsync(
-                "You are currently running a pre-release version. Do you want to fetch the latest pre-release version?", cancellationToken: ct)
-                ? "pre-release"
-                : "full";
-            Options.PreRelease = true;
+            Options.PreRelease = await AnsiConsole.ConfirmAsync(
+                "You are currently running a pre-release version. Do you want to include pre-release versions?", cancellationToken: ct);
         }
 
-        AnsiConsole.WriteLine($"Fetching latest {preRelease} version...");
+        string channel = Options.PreRelease ? "version (including pre-releases)" : "full version";
+        AnsiConsole.WriteLine($"Fetching latest {channel}...");
         var result = Options.PreRelease ? await client.GetLatestVersionIncludingPreReleaseAsync(ct) : await client.GetLatestFullVersionAsync(ct);
         if (!result.IsSuccess)
         {
-            AnsiConsole.MarkupLine($"[red]Failed to fetch latest {preRelease} version:[/] {result.Error}");
+            AnsiConsole.MarkupLine($"[red]Failed to fetch latest {channel}:[/] {Markup.Escape(result.Error)}");
             return 1;
         }
 
@@ -70,7 +67,12 @@ public class UpdateCommand(UpdateCommandOptions options) : ICommand<UpdateComman
 
         if (Options.Fetch)
         {
-            AnsiConsole.WriteLine($"Latest {preRelease} version: {latestVersion} (Current: {currentVersion?.ToString() ?? BuildInfo.Version})");
+            AnsiConsole.WriteLine($"Latest {channel}: {latestVersion} (Current: {currentVersion?.ToString() ?? BuildInfo.Version})");
+            if (currentVersion != null && currentVersion > latestVersion)
+            {
+                WriteDowngradeWarning(currentVersion, latestVersion);
+            }
+
             return 0;
         }
 
@@ -90,9 +92,8 @@ public class UpdateCommand(UpdateCommandOptions options) : ICommand<UpdateComman
         bool update = true;
         if (compareResult > 0)
         {
-            update = await AnsiConsole.ConfirmAsync(
-                $"You are running a version newer than the latest version. Do you want to downgrade to the latest published {preRelease} version ({latestVersion})?",
-                cancellationToken: ct);
+            WriteDowngradeWarning(currentVersion, latestVersion);
+            update = await AnsiConsole.ConfirmAsync($"Do you want to downgrade to {latestVersion}?", false, ct);
         }
 
         if (!update)
@@ -150,6 +151,17 @@ public class UpdateCommand(UpdateCommandOptions options) : ICommand<UpdateComman
         {
             TryDeleteDirectory(tempDirectory);
         }
+    }
+
+    private void WriteDowngradeWarning(ReleaseVersion currentVersion, ReleaseVersion latestVersion)
+    {
+        string message = currentVersion.IsPreRelease && !Options.PreRelease
+            ? $"You are running pre-release {currentVersion}, which is newer than the latest full release {latestVersion}. "
+                + $"Updating without --pre-release will downgrade PublishTool to {latestVersion}."
+            : $"You are running {currentVersion}, which is newer than the latest published version {latestVersion}. "
+                + $"Updating will downgrade PublishTool to {latestVersion}.";
+
+        AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(message)}[/]");
     }
 
     private static Result<bool> ExtractArchive(FileInfo archive, string targetDirectory)
