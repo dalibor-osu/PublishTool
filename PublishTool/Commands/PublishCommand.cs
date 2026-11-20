@@ -13,6 +13,8 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
 {
     private const int OutputTailLength = 5;
     private const int KeepReferences = 3;
+    private const string ReleaseConfiguration = "Release";
+    private const string DebugConfiguration = "Debug";
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(100);
 
     public PublishCommandOptions Options { get; } = options;
@@ -45,21 +47,7 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
             return 1;
         }
 
-        var selectedProjects = Options.All
-            ? projects.Select(p => p.Name)
-            : await AnsiConsole.PromptAsync(
-                new MultiSelectionPrompt<string>()
-                    .Title("Select [green]projects[/] to publish:")
-                    .AddChoices(projects.Select(p => p.Name)), ct);
-
-        var projectsToPublish = projects.Where(p => selectedProjects.Any(sp => p.AbsolutePath.EndsWith($"{sp}.csproj"))).ToList();
-
-        string configuration = Options.All
-            ? "Release"
-            : await AnsiConsole.PromptAsync(
-                new SelectionPrompt<string>()
-                    .Title("Select build Configuration:")
-                    .AddChoices("Release", "Debug"), ct);
+        var (projectsToPublish, configuration) = await SelectProjectsAndConfiguration(projects, ct);
 
         AnsiConsole.Clear();
 
@@ -110,6 +98,54 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         }
 
         return _hasError ? 1 : 0;
+    }
+
+    private async Task<(List<DotnetProject> Projects, string Configuration)> SelectProjectsAndConfiguration(
+        List<DotnetProject> projects, CancellationToken ct)
+    {
+        if (Options.All)
+        {
+            return (projects, ReleaseConfiguration);
+        }
+
+        List<string> selectedNames = [];
+        while (true)
+        {
+            var projectPrompt = new MultiSelectionPrompt<string>()
+                .Title("Select [green]projects[/] to publish:")
+                .AddChoices(projects.Select(p => p.Name));
+            foreach (string name in selectedNames)
+            {
+                projectPrompt.Select(name);
+            }
+
+            selectedNames = await AnsiConsole.PromptAsync(projectPrompt, ct);
+
+            if (await PromptConfiguration(selectedNames.Count, ct) is { } configuration)
+            {
+                var selectedProjects = projects
+                    .Where(p => selectedNames.Any(sp => p.AbsolutePath.EndsWith($"{sp}.csproj")))
+                    .ToList();
+                return (selectedProjects, configuration);
+            }
+        }
+    }
+
+    private static async Task<string?> PromptConfiguration(int selectedCount, CancellationToken ct)
+    {
+        var prompt = new SelectionPrompt<string>()
+            .Title($"Select build Configuration for [green]{selectedCount}[/] selected project(s) [grey](Esc / Left to go back)[/]:")
+            .AddChoices(ReleaseConfiguration, DebugConfiguration);
+        try
+        {
+            return await new BackKeyConsole(AnsiConsole.Console).PromptAsync(prompt, ct);
+        }
+        catch (BackRequestedException)
+        {
+            AnsiConsole.Clear();
+            AnsiConsole.Cursor.Show();
+            return null;
+        }
     }
 
     private static readonly string Escape = ((char)27).ToString();

@@ -51,6 +51,7 @@ PublishTool/                      The CLI (net11.0, PublishAot, InvariantGlobali
   PublishCommandBuilder.cs        Builds the MSBuild command line per project kind
   DeployPreparer.cs               The deploy logic, skipped with --local (download, compare, zip, upload)
   Console/JobDisplay.cs           JobRow/JobDisplay: the redrawn progress table (spinner, tail of output)
+  Console/BackKeyConsole.cs       IAnsiConsole wrapper whose input throws BackRequestedException on Esc / Left arrow
   GitHub/                         GitHubClient (releases API), ReleaseVersion (semver + rc parsing/compare)
   Helpers/                        ProcessHelper (run process, stream output), EnvironmentHelper, OptionParsers
   Logger.cs                       In-memory log flushed to %APPDATA%\PublishTool\Logs\<date>.log on exit
@@ -115,6 +116,12 @@ The `update` command downloads exactly these asset names, so keep the naming in 
   for a key press at the end. `PublishCommand` does not use Spectre live widgets; it redraws a `JobDisplay`
   every 100 ms from a loop in `ExecuteAsync`. Long-running work runs in `Task.Run` and reports progress with
   `JobRow.AppendLine`; a row's `Name` can be changed while it runs to show the current phase.
+- **Going back in prompts**: Spectre prompts have no back key, so a prompt that should support it is shown on
+  a `BackKeyConsole` wrapping `AnsiConsole.Console`; its input throws `BackRequestedException` on Esc or
+  Left arrow (see `PublishCommand.PromptConfiguration`). Spectre does not clean up a prompt stopped this way
+  (its lines stay and the cursor stays hidden), so the catch calls `AnsiConsole.Clear()` and
+  `AnsiConsole.Cursor.Show()`. Don't use it on prompts where Left arrow means something (hierarchical
+  multi-selection, text input).
 - **Cancellation**: Ctrl+C cancels the shared `CancellationTokenSource`; MSBuild processes are killed with
   their process tree. Every loop over files must call `ct.ThrowIfCancellationRequested()`. Cleanup of temp
   directories happens in `finally` blocks in `PublishCommand.PrepareDeploy`.
@@ -234,8 +241,9 @@ PublishTool [command] [options]
    holding the reference zips), the deploy directory (local, receives `<name>` change sets), directories to
    ignore while scanning (default `.git, .claude`), and which projects are publishable. Re-run the wizard
    with `PublishTool config -dir C:\repo`.
-2. **Publish**: `PublishTool publish` prompts for projects and configuration (Release/Debug), then shows the
-   build row, one row per project and the five deploy rows. `-a` publishes all publishable projects in
+2. **Publish**: `PublishTool publish` prompts for projects and configuration (Release/Debug). Pressing Esc or
+   Left arrow in the configuration prompt reopens the project prompt with the previous selection preselected.
+   Then it shows the build row, one row per project and the five deploy rows. `-a` publishes all publishable projects in
    Release without prompts. `-l/--local` only publishes locally and skips the deploy rows. Exit code 0 on
    success, 1 on any failure.
 3. **Deploy**: after a publish without `--local`, hand `<deploy dir>\<branch>_<timestamp>` to whoever deploys; it contains
