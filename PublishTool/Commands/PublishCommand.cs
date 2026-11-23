@@ -2,9 +2,9 @@ using PublishTool.Attributes;
 using PublishTool.Commands.Options;
 using PublishTool.Configuration;
 using PublishTool.Console;
+using PublishTool.Deployment;
 using PublishTool.Helpers;
 using Spectre.Console;
-using Spectre.Console.Rendering;
 
 namespace PublishTool.Commands;
 
@@ -15,7 +15,6 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
     private const int KeepReferences = 3;
     private const string ReleaseConfiguration = "Release";
     private const string DebugConfiguration = "Debug";
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(100);
 
     public PublishCommandOptions Options { get; } = options;
 
@@ -79,23 +78,7 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         }
 
         var work = PublishAll(projectsToPublish, configuration, buildRow, publishRows, deployStep, ct);
-        AnsiConsole.Cursor.Hide();
-        try
-        {
-            // Redraw on a timer regardless of cancellation so the display keeps up until the very end.
-            while (await Task.WhenAny(work, Task.Delay(RefreshInterval, CancellationToken.None)) != work)
-            {
-                Draw(display);
-            }
-
-            await work;
-            display.Stop();
-            Draw(display);
-        }
-        finally
-        {
-            AnsiConsole.Cursor.Show();
-        }
+        await JobDisplayRunner.RunAsync(display, work, live: true);
 
         return _hasError ? 1 : 0;
     }
@@ -148,17 +131,6 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         }
     }
 
-    private static readonly string Escape = ((char)27).ToString();
-    private static readonly ControlCode CursorHome = new(Escape + "[H");
-    private static readonly ControlCode EraseBelow = new(Escape + "[J");
-
-    private static void Draw(JobDisplay display)
-    {
-        AnsiConsole.Write(CursorHome);
-        AnsiConsole.Write(display);
-        AnsiConsole.Write(EraseBelow);
-    }
-
     private sealed record DeployStep(
         DeployPreparer Preparer,
         JobRow DownloadRow,
@@ -190,7 +162,7 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
             return;
         }
 
-        await Task.WhenAll(publishRows.Select(item => RunMsBuild(item.Command.BuildCommand(), item.Row, ct)));
+        await Task.WhenAll(publishRows.Select(item => PublishProject(item.Command, item.Row, ct)));
 
         if (deployStep is null)
         {
@@ -249,19 +221,30 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
                 downloadRow.Finish(JobState.Succeeded, $"{files} files");
             }
 
-            deployDirectory = preparer.DeployPath(name);
+            string packageDirectory = preparer.DeployPath(name);
+            deployDirectory = packageDirectory;
             changesRow.Name = previousReference is null
-                ? $"Collecting changed files into {deployDirectory} (everything is new)"
-                : $"Collecting changed files into {deployDirectory} (compared with {Path.GetFileName(previousReference)})";
+                ? $"Collecting changed files into {packageDirectory} (everything is new)"
+                : $"Collecting changed files into {packageDirectory} (compared with {Path.GetFileName(previousReference)})";
             changesRow.Start();
-            int changed = await Task.Run(() => preparer.CollectChanges(deployDirectory, previous, changesRow.AppendLine, ct), ct);
-            changesRow.Finish(JobState.Succeeded, $"{changed} files");
+            string packageName = name;
+            var changes = await Task.Run(() => preparer.CollectChanges(packageDirectory, previous, packageName, changesRow.AppendLine, ct), ct);
+            string preparedManifest = DeployPreparer.PrepareManifest(work, new PackageManifest
+            {
+                ToolVersion = BuildInfo.Version,
+                Name = name,
+                Prefix = prefix,
+                Created = DateTimeOffset.Now,
+                PreviousReference = previousReference is null ? null : Path.GetFileName(previousReference),
+                Projects = [.. changes.Projects]
+            });
+            changesRow.Finish(JobState.Succeeded, $"{changes.Changed} files changed, {changes.Deleted} deleted");
             deployDirectory = null;
 
             string archive = preparer.ArchivePath(name);
             archiveRow.Name = $"Compressing the full publish into {archive}";
             archiveRow.Start();
-            var archiveInfo = await Task.Run(() => preparer.CreateArchive(archive, previous, archiveRow.AppendLine, ct), ct);
+            var archiveInfo = await Task.Run(() => preparer.CreateArchive(archive, previous, changes.Lineage, archiveRow.AppendLine, ct), ct);
             archiveRow.Finish(JobState.Succeeded, archiveInfo.Carried.Count == 0
                 ? $"{archiveInfo.Files} files, {DeployPreparer.FormatSize(archiveInfo.Size)}"
                 : $"{archiveInfo.Files} files, {DeployPreparer.FormatSize(archiveInfo.Size)}, {archiveInfo.Carried.Count} unpublished "
@@ -274,6 +257,7 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
             await Task.Run(() => DeployPreparer.Upload(archive, newReference, uploadRow.AppendLine, ct), ct);
             DeployPreparer.Commit(uploading, newReference);
             uploading = null;
+            PlaceManifest(preparedManifest, packageDirectory, newReference);
             uploadRow.Finish(JobState.Succeeded, DeployPreparer.FormatSize(archiveInfo.Size));
 
             pruneRow.Name = $"Deleting old {prefix} publishes from {preparer.SharedRoot} (keeping the last {KeepReferences})";
@@ -309,6 +293,20 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         }
     }
 
+    private static void PlaceManifest(string preparedManifest, string packageDirectory, string newReference)
+    {
+        try
+        {
+            DeployPreparer.PlaceManifest(preparedManifest, packageDirectory);
+        }
+        catch (Exception e)
+        {
+            Logger.LogError($"The manifest could not be placed into {packageDirectory}, removing the uploaded reference {newReference}:\n{e}");
+            DeployPreparer.TryDelete(newReference);
+            throw;
+        }
+    }
+
     private async Task<bool> BuildDependencies(IReadOnlyList<DotnetProject> projects, string configuration, JobRow row, CancellationToken ct)
     {
         string traversalProject = DependencyBuild.WriteTraversalProject(projects, configuration);
@@ -320,6 +318,26 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
         {
             DependencyBuild.TryDelete(traversalProject);
         }
+    }
+
+    private async Task<bool> PublishProject(PublishCommandBuilder command, JobRow row, CancellationToken ct)
+    {
+        try
+        {
+            if (Directory.Exists(command.PublishDir))
+            {
+                Directory.Delete(command.PublishDir, recursive: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            row.Finish(JobState.Failed, $"could not clear {command.PublishDir}: {ex.Message}");
+            _hasError = true;
+            Logger.LogError(ex.ToString());
+            return false;
+        }
+
+        return await RunMsBuild(command.BuildCommand(), row, ct);
     }
 
     private async Task<bool> RunMsBuild(string arguments, JobRow row, CancellationToken ct)

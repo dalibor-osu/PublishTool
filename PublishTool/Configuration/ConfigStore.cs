@@ -14,6 +14,16 @@ public static class ConfigStore
         ConfigVersions.Parsers,
         ConfigVersions.Migrators,
         JsonContext.Default.Config);
+
+    public static readonly string ServerDirectory =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PublishTool");
+
+    public static readonly ConfigStore<ServerConfig> Server = new(
+        Path.Combine(ServerDirectory, "server.json"),
+        ServerConfigVersions.Current,
+        ServerConfigVersions.Parsers,
+        ServerConfigVersions.Migrators,
+        JsonContext.Default.ServerConfig);
 }
 
 public sealed class ConfigStore<TConfig> where TConfig : class, IVersionedConfig

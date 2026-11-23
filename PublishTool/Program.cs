@@ -2,6 +2,7 @@
 using PublishTool.Commands;
 using PublishTool.Configuration;
 using PublishTool.Generated;
+using PublishTool.Helpers;
 using Spectre.Console;
 
 using var ct = new CancellationTokenSource();
@@ -9,6 +10,7 @@ Console.CancelKeyPress += (_, e) =>
 {
     if (ct.IsCancellationRequested)
     {
+        e.Cancel = CriticalSection.IsActive;
         return;
     }
 

@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.IO.Compression;
+using PublishTool.Configuration;
+using PublishTool.Deployment;
 using PublishTool.Helpers;
 
 namespace PublishTool;
@@ -146,33 +148,57 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
         return (extracted, files);
     }
 
-    public int CollectChanges(string deployDirectory, string? previous, Action<string> report, CancellationToken ct)
+    public ChangeSet CollectChanges(string deployDirectory, string? previous, string name, Action<string> report, CancellationToken ct)
     {
         Directory.CreateDirectory(deployDirectory);
-        int changed = 0;
+        var previousLineage = previous is null ? null : PackageJson.TryReadLineage(Path.Combine(previous, ReferenceLineage.FileName));
+        var lineage = new ReferenceLineage();
+        var projects = new List<ManifestProject>();
         foreach (string project in projectNames)
         {
-            string source = PublishedProjectDirectory(project);
-            foreach (string file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+            var collected = CollectProject(project, deployDirectory, previous, report, ct);
+            string? previousPublisher = FindPublisher(previousLineage, project);
+            if (collected.Files.Count == 0 && collected.Deleted.Count == 0)
             {
-                ct.ThrowIfCancellationRequested();
-                string relative = Path.GetRelativePath(source, file);
-                string? previousFile = previous is null ? null : Path.Combine(previous, project, relative);
-                if (previousFile is not null && File.Exists(previousFile) && FilesAreEqual(file, previousFile))
+                if (previousPublisher is not null)
                 {
-                    continue;
+                    lineage.Projects[project] = previousPublisher;
                 }
 
-                CopyFile(file, Path.Combine(deployDirectory, project, relative));
-                changed++;
-                report(Path.Combine(project, relative));
+                continue;
+            }
+
+            collected.Base = collected.IsFullPublish ? null : previousPublisher;
+            lineage.Projects[project] = name;
+            projects.Add(collected);
+        }
+
+        if (previousLineage is not null)
+        {
+            foreach (var (project, publisher) in previousLineage.Projects)
+            {
+                if (!projectNames.Contains(project, StringComparer.OrdinalIgnoreCase))
+                {
+                    lineage.Projects[project] = publisher;
+                }
             }
         }
 
-        return changed;
+        return new ChangeSet(projects, lineage);
     }
 
-    public ArchiveInfo CreateArchive(string archive, string? previous, Action<string> report, CancellationToken ct)
+    public static string PrepareManifest(string workDirectory, PackageManifest manifest)
+    {
+        Directory.CreateDirectory(workDirectory);
+        string path = Path.Combine(workDirectory, PackageManifest.FileName);
+        PackageJson.WriteManifest(path, manifest);
+        return path;
+    }
+
+    public static void PlaceManifest(string preparedManifest, string deployDirectory) =>
+        File.Move(preparedManifest, Path.Combine(deployDirectory, PackageManifest.FileName), overwrite: true);
+
+    public ArchiveInfo CreateArchive(string archive, string? previous, ReferenceLineage lineage, Action<string> report, CancellationToken ct)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(archive)!);
         File.Delete(archive);
@@ -202,6 +228,9 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
                     carried.Add(project);
                 }
             }
+
+            using var lineageStream = zip.CreateEntry(ReferenceLineage.FileName, ArchiveCompression).Open();
+            PackageJson.WriteLineage(lineageStream, lineage);
         }
 
         return new ArchiveInfo(archive, total, new FileInfo(archive).Length, carried);
@@ -258,6 +287,71 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
     }
 
     public readonly record struct ArchiveInfo(string Path, int Files, long Size, IReadOnlyList<string> Carried);
+
+    public sealed record ChangeSet(IReadOnlyList<ManifestProject> Projects, ReferenceLineage Lineage)
+    {
+        public int Changed => Projects.Sum(p => p.Files.Count);
+
+        public int Deleted => Projects.Sum(p => p.Deleted.Count);
+    }
+
+    private ManifestProject CollectProject(string project, string deployDirectory, string? previous, Action<string> report, CancellationToken ct)
+    {
+        string source = PublishedProjectDirectory(project);
+        string? previousProject = previous is not null && Directory.Exists(Path.Combine(previous, project))
+            ? Path.Combine(previous, project)
+            : null;
+        var collected = new ManifestProject { Name = project, IsFullPublish = previousProject is null };
+        var current = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested();
+            string relative = Path.GetRelativePath(source, file);
+            current.Add(relative);
+            string? previousFile = previousProject is null ? null : Path.Combine(previousProject, relative);
+            if (previousFile is not null && File.Exists(previousFile) && FilesAreEqual(file, previousFile))
+            {
+                continue;
+            }
+
+            string destination = Path.Combine(deployDirectory, project, relative);
+            CopyFile(file, destination);
+            collected.Files.Add(new ManifestFile
+            {
+                Path = PackagePaths.ToManifest(relative),
+                Size = new FileInfo(destination).Length,
+                Sha256 = FileHashing.Sha256(destination)
+            });
+            report(Path.Combine(project, relative));
+        }
+
+        if (previousProject is not null)
+        {
+            foreach (string file in Directory.EnumerateFiles(previousProject, "*", SearchOption.AllDirectories))
+            {
+                ct.ThrowIfCancellationRequested();
+                string relative = Path.GetRelativePath(previousProject, file);
+                if (!current.Contains(relative))
+                {
+                    collected.Deleted.Add(PackagePaths.ToManifest(relative));
+                    report($"{Path.Combine(project, relative)} (deleted)");
+                }
+            }
+        }
+
+        return collected;
+    }
+
+    private static string? FindPublisher(ReferenceLineage? lineage, string project)
+    {
+        if (lineage is null)
+        {
+            return null;
+        }
+
+        string? key = ServerConfig.FindKey(lineage.Projects, project);
+        return key is null ? null : lineage.Projects[key];
+    }
 
     private static int AddProject(ZipArchive zip, string project, string source, Action<string> report, CancellationToken ct)
     {
