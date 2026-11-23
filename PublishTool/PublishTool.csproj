@@ -26,6 +26,7 @@
 
   <ItemGroup>
     <PackageReference Include="Spectre.Console" Version="0.57.2"/>
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="11.0.0"/>
     <ProjectReference Include="..\PublishTool.Generators\PublishTool.Generators.csproj"
                       OutputItemType="Analyzer" ReferenceOutputAssembly="false"
                       UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier"/>

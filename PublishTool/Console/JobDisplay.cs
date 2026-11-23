@@ -128,9 +128,10 @@ internal sealed class JobDisplay(int tailLength = 5) : IRenderable
             if (ShowsTail(row))
             {
                 string[] tail = row.Tail();
-                for (int i = 0; i < tailPerRow; i++)
+                int shown = row.State == JobState.Running ? tailPerRow : Math.Min(tailPerRow, tail.Length);
+                for (int i = 0; i < shown; i++)
                 {
-                    int index = tail.Length - tailPerRow + i;
+                    int index = tail.Length - shown + i;
                     string text = index >= 0 ? "  " + tail[index] : string.Empty;
                     lines.Add(new Line(null, [(text, TailStyle)], null));
                 }
