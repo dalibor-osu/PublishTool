@@ -51,11 +51,11 @@ internal static class DeploySummary
         }
     }
 
-    public static void WriteIssues(IReadOnlyList<string> warnings, IReadOnlyList<string> errors)
+    public static void WriteIssues(IReadOnlyList<DeployWarning> warnings, IReadOnlyList<string> errors)
     {
-        foreach (string warning in warnings)
+        foreach (var warning in warnings)
         {
-            AnsiConsole.MarkupLineInterpolated($"[yellow]Warning:[/] {warning}");
+            AnsiConsole.MarkupLineInterpolated($"[yellow]Warning:[/] {warning.Message}");
         }
 
         foreach (string error in errors)
@@ -64,20 +64,8 @@ internal static class DeploySummary
         }
     }
 
-    public static async Task<bool> AcceptAsync(IReadOnlyList<string> warnings, bool yes, string action, CancellationToken ct)
+    public static async Task<bool> AcceptAsync(IReadOnlyList<DeployWarning> warnings, string action, CancellationToken ct)
     {
-        if (yes)
-        {
-            if (warnings.Count == 0)
-            {
-                return true;
-            }
-
-            AnsiConsole.MarkupLineInterpolated(
-                $"[red]Stopping: {warnings.Count} warning(s) need to be accepted, which -y never does. Run without -y to review them.[/]");
-            return false;
-        }
-
         var prompt = warnings.Count == 0
             ? new ConfirmationPrompt($"{Markup.Escape(action)}?") { DefaultValue = true }
             : new ConfirmationPrompt($"[yellow]{warnings.Count} warning(s).[/] Accept the risk and {Markup.Escape(action.ToLowerInvariant())}?")

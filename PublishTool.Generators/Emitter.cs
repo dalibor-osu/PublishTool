@@ -16,7 +16,6 @@ namespace PublishTool.Generators;
 internal static class Emitter
 {
     private const string ResultType = "global::PublishTool.Result<global::PublishTool.Commands.ICommand>";
-    private const string HelpCommandType = "global::PublishTool.Commands.HelpCommand";
 
     public static readonly string[] HelpAliases = ["-h", "--help"];
 
@@ -24,7 +23,7 @@ internal static class Emitter
     private static readonly Lazy<Template> HelpTemplate = new(() => Load("Help.sbncs"));
     private static readonly Lazy<Template> ApplicationHelpTemplate = new(() => Load("ApplicationHelp.sbncs"));
 
-    public static string Emit(ImmutableArray<CommandModel> commands)
+    public static string Emit(ImmutableArray<CommandModel> commands, string applicationNamespace)
     {
         var views = commands
             .OrderBy(command => command.CommandName, StringComparer.Ordinal)
@@ -33,15 +32,24 @@ internal static class Emitter
 
         foreach (var view in views)
         {
-            view.Help = Render(HelpTemplate.Value, globals => globals["Command"] = view).TrimEnd();
+            view.Help = Render(HelpTemplate.Value, globals =>
+            {
+                globals["AppName"] = applicationNamespace;
+                globals["Command"] = view;
+            }).TrimEnd();
         }
 
-        string applicationHelp = Render(ApplicationHelpTemplate.Value, globals => globals["Commands"] = views).TrimEnd();
+        string applicationHelp = Render(ApplicationHelpTemplate.Value, globals =>
+        {
+            globals["AppName"] = applicationNamespace;
+            globals["Commands"] = views;
+        }).TrimEnd();
 
         return Render(ParsersTemplate.Value, globals =>
         {
+            globals["Namespace"] = applicationNamespace;
             globals["ResultType"] = ResultType;
-            globals["HelpCommandType"] = HelpCommandType;
+            globals["HelpCommandType"] = $"global::{applicationNamespace}.Commands.HelpCommand";
             globals["HelpAliases"] = HelpAliases;
             globals["Commands"] = views;
             globals["DefaultCommand"] = views.FirstOrDefault(view => view.IsDefault);

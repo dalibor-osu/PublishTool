@@ -26,22 +26,11 @@
 
   <ItemGroup>
     <PackageReference Include="Spectre.Console" Version="0.57.2"/>
-    <PackageReference Include="System.ServiceProcess.ServiceController" Version="11.0.0"/>
+    <ProjectReference Include="..\PublishTool.Core\PublishTool.Core.csproj"/>
     <ProjectReference Include="..\PublishTool.Generators\PublishTool.Generators.csproj"
                       OutputItemType="Analyzer" ReferenceOutputAssembly="false"
                       UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier"/>
+    <CompilerVisibleProperty Include="RootNamespace"/>
   </ItemGroup>
-
-  <Target Name="GenBuildInfo" BeforeTargets="CoreCompile">
-    <PropertyGroup>
-      <BuildInfoFile>$(IntermediateOutputPath)BuildInfo.g.cs</BuildInfoFile>
-      <BuildVersion Condition="'$(BuildVersion)' == ''">dev</BuildVersion>
-    </PropertyGroup>
-    <WriteLinesToFile File="$(BuildInfoFile)" Overwrite="true" WriteOnlyWhenDifferent="true"
-                      Lines="internal static class BuildInfo { public const string Version = &quot;$(BuildVersion)&quot;%3B }"/>
-    <ItemGroup>
-      <Compile Include="$(BuildInfoFile)"/>
-    </ItemGroup>
-  </Target>
 
 </Project>

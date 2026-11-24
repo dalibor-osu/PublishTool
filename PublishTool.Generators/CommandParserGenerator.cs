@@ -12,6 +12,8 @@ public sealed class CommandParserGenerator : IIncrementalGenerator
 {
     private const string CommandAttribute = "PublishTool.Attributes.CommandAttribute";
     private const string OptionAttribute = "PublishTool.Attributes.OptionAttribute";
+    private const string RootNamespaceProperty = "build_property.RootNamespace";
+    private const string DefaultRootNamespace = "PublishTool";
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -24,8 +26,14 @@ public sealed class CommandParserGenerator : IIncrementalGenerator
             .Select(static (model, _) => model!)
             .Collect();
 
-        context.RegisterSourceOutput(commands, static (sourceContext, models) =>
+        var rootNamespace = context.AnalyzerConfigOptionsProvider.Select(static (provider, _) =>
+            provider.GlobalOptions.TryGetValue(RootNamespaceProperty, out string? value) && !string.IsNullOrWhiteSpace(value)
+                ? value.Trim()
+                : DefaultRootNamespace);
+
+        context.RegisterSourceOutput(commands.Combine(rootNamespace), static (sourceContext, input) =>
         {
+            var (models, applicationNamespace) = input;
             foreach (var model in models)
             {
                 foreach (var diagnostic in model.Diagnostics)
@@ -42,7 +50,7 @@ public sealed class CommandParserGenerator : IIncrementalGenerator
 
             try
             {
-                sourceContext.AddSource("CommandParsers.g.cs", Emitter.Emit(parsable));
+                sourceContext.AddSource("CommandParsers.g.cs", Emitter.Emit(parsable, applicationNamespace));
             }
             catch (Exception exception)
             {

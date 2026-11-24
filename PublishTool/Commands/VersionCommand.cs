@@ -8,8 +8,6 @@ public class VersionCommand(VersionCommandOptions options) : ICommand<VersionCom
 {
     public VersionCommandOptions Options { get; } = options;
 
-    public bool UsesAlternateScreen => false;
-
     public Task<int> ExecuteAsync(CancellationToken ct)
     {
         System.Console.WriteLine($"PublishTool version {BuildInfo.Version}"); // Seems to be faster than AnsiConsole

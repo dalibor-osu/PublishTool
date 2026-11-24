@@ -6,7 +6,7 @@ using Spectre.Console;
 namespace PublishTool.Commands;
 
 [Command("config", Description = "Create or update the config in a directory")]
-public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigCommandOptions>
+public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigCommandOptions>, IAlternateScreenCommand
 {
     public ConfigCommandOptions Options { get; } = options;
 
