@@ -105,7 +105,7 @@ PublishTool.Generators/           Roslyn incremental source generator (netstanda
   Emitter.cs + Templates/*.sbncs  Renders <RootNamespace>.Generated.CommandParsers (parsing + help text)
   Diagnostics.cs                  PT0001..PT0008 compile errors for bad command/option declarations
 PublishTool.Tests/                xUnit tests of the core and the CLI parsing (temp directories, FakeHostController)
-.github/workflows/release.yml     Manual release: semver from Conventional Commits, AOT build of both exes for 6 RIDs
+.github/workflows/release.yml     Manual release: semver from Conventional Commits, AOT build of both exes for 4 RIDs
 TestApps/                         Four sample apps (Core/Framework x IIS/service) + scripts for an end-to-end deploy test
 docs/specs/                       Agreed design specifications
 docs/impl/                        Implementation notes per spec
@@ -165,8 +165,8 @@ Get-ChildItem PublishTool/obj/generated, PublishToolCli/obj/generated -Recurse -
 
 Releases are cut manually with the **Release** GitHub Actions workflow (`workflow_dispatch`). It derives the
 next version from Conventional Commits since the last tag (or takes an explicit bump/version), builds both
-executables with Native AOT for win-x64/arm64, linux-x64/arm64, osx-x64/arm64, packages them, tags `v<version>`
-and creates one GitHub release with all assets (+ `SHA256SUMS.txt`):
+executables with Native AOT for win-x64/arm64 and linux-x64/arm64 (osx builds are disabled), packages them, tags
+`v<version>` and creates one GitHub release with all assets (+ `SHA256SUMS.txt`):
 
 - TUI: `PublishTool-v<version>-<rid>.zip|tar.gz`
 - CLI: `PublishToolCli-<rid>-v<version>.zip|tar.gz`
