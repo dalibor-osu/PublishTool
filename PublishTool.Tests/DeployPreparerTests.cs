@@ -35,7 +35,9 @@ public class DeployPreparerTests
         var web = Assert.Single(changes.Projects);
         Assert.True(web.IsFullPublish);
         Assert.Null(web.Base);
-        Assert.Equal("App.dll", Assert.Single(web.Files).Path);
+        var app = Assert.Single(web.Files);
+        Assert.Equal("App.dll", app.Path);
+        Assert.Null(app.PreviousSha256);
         Assert.Equal(FirstName, changes.Lineage.Projects["Web"]);
         Assert.True(temp.Exists($"deploy/{FirstName}/Web/App.dll"));
     }
@@ -57,8 +59,13 @@ public class DeployPreparerTests
         var web = Assert.Single(changes.Projects);
         Assert.False(web.IsFullPublish);
         Assert.Equal(FirstName, web.Base);
-        Assert.Equal("App.dll", Assert.Single(web.Files).Path);
-        Assert.Equal(["Old.dll"], web.Deleted);
+        var app = Assert.Single(web.Files);
+        Assert.Equal("App.dll", app.Path);
+        Assert.Equal(PackageBuilder.Sha256Of("app v2"), app.Sha256);
+        Assert.Equal(PackageBuilder.Sha256Of("app v1"), app.PreviousSha256);
+        var deleted = Assert.Single(web.Deleted);
+        Assert.Equal("Old.dll", deleted.Path);
+        Assert.Equal(PackageBuilder.Sha256Of("old"), deleted.Sha256);
         Assert.Equal(SecondName, changes.Lineage.Projects["Web"]);
         Assert.Equal(FirstName, changes.Lineage.Projects["Api"]);
         Assert.Equal(["Api"], archive.Carried);

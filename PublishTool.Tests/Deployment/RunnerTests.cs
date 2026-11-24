@@ -34,10 +34,11 @@ public class RunnerTests
         config.SetRecord(target, new DeployRecord { Package = PreviousPackage });
         store.Save(config);
         var package = new PackageBuilder(temp, PackageName)
-            .Project("Web", PreviousPackage, false, new Dictionary<string, string> { ["App.dll"] = "new app", ["bin/New.dll"] = "new" }, ["Old.dll"])
+            .Project("Web", PreviousPackage, false, new Dictionary<string, string> { ["App.dll"] = "new app", ["bin/New.dll"] = "new" },
+                new Dictionary<string, string> { ["Old.dll"] = "old file" }, new Dictionary<string, string> { ["App.dll"] = "old app" })
             .Build();
         var plan = DeployPlan.Create(package, new Dictionary<string, DeployTarget> { ["Web"] = new() { Path = target } }, config,
-            new FakeHostController(), BuildInfo.Version);
+            new FakeHostController(), BuildInfo.Version, CancellationToken.None);
         return new Scenario { Temp = temp, Plan = plan, Store = store, Config = config, Target = target };
     }
 

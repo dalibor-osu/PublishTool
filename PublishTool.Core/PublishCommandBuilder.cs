@@ -6,7 +6,7 @@ public class PublishCommandBuilder(DotnetProject project, string configuration, 
     public string Configuration { get; } = configuration;
     public string PublishDir { get; } = publishDir;
 
-    public string BuildCommand()
+    public string BuildCommand(string prefix)
     {
         string dir = PublishDir.TrimEnd('\\');
 
@@ -21,7 +21,7 @@ public class PublishCommandBuilder(DotnetProject project, string configuration, 
             _ => throw new NotSupportedException($"Unsupported project kind: {Project.Kind}")
         };
 
-        command += " /p:BuildProjectReferences=false /nr:false /v:minimal /nologo";
+        command += $" /p:{MsBuildProperties.Prefix}={prefix} /p:BuildProjectReferences=false /nr:false /v:minimal /nologo";
         return command;
     }
 }

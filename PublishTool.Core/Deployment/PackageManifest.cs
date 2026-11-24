@@ -30,7 +30,7 @@ public sealed class ManifestProject
 
     public List<ManifestFile> Files { get; set; } = [];
 
-    public List<string> Deleted { get; set; } = [];
+    public List<ManifestDeletion> Deleted { get; set; } = [];
 }
 
 public sealed class ManifestFile
@@ -38,6 +38,15 @@ public sealed class ManifestFile
     public string Path { get; set; } = string.Empty;
 
     public long Size { get; set; }
+
+    public string Sha256 { get; set; } = string.Empty;
+
+    public string? PreviousSha256 { get; set; }
+}
+
+public sealed class ManifestDeletion
+{
+    public string Path { get; set; } = string.Empty;
 
     public string Sha256 { get; set; } = string.Empty;
 }

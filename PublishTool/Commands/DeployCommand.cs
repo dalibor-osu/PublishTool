@@ -75,7 +75,7 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
         var hosts = new WindowsHostController();
         var mappings = ServerConfigHandler.ResolveTargets(
             store, config, package.Manifest.Prefix, [.. package.Manifest.Projects.Select(p => p.Name)], hosts.ServiceExists);
-        var plan = DeployPlan.Create(package, mappings, config, hosts, BuildInfo.Version);
+        var plan = DeployPlan.Create(package, mappings, config, hosts, BuildInfo.Version, ct);
         DeploySummary.WritePlan(plan, verification, BuildInfo.Version);
 
         if (plan.Errors.Count > 0)

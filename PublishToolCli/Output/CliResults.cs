@@ -23,7 +23,7 @@ public class CliResult(string command)
     public List<CliStep> Steps { get; set; } = [];
 }
 
-public sealed record CliWarning(string Code, string Message, bool Accepted);
+public sealed record CliWarning(string Code, string Message, bool Accepted, IReadOnlyList<string>? Files = null);
 
 public sealed record CliStep(string Name, string State, string? Detail);
 
@@ -41,6 +41,8 @@ public sealed class PublishCliResult() : CliResult("publish")
     public bool Local { get; set; }
 
     public List<string> Projects { get; set; } = [];
+
+    public string? Prefix { get; set; }
 
     public string? PackageName { get; set; }
 

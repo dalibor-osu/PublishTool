@@ -16,12 +16,14 @@ public class DeployExecutorTests
         string target = temp.Combine("target");
         var package = new PackageBuilder(temp)
             .Project("Web", PreviousPackage, false,
-                new Dictionary<string, string> { ["App.dll"] = "new app", ["bin/New.dll"] = "new file" }, ["Old.dll", "sub/Gone.dll"])
+                new Dictionary<string, string> { ["App.dll"] = "new app", ["bin/New.dll"] = "new file" },
+                new Dictionary<string, string> { ["Old.dll"] = "old file", ["sub/Gone.dll"] = "gone" },
+                new Dictionary<string, string> { ["App.dll"] = "old app" })
             .Build();
         var config = new ServerConfig();
         config.SetRecord(target, new DeployRecord { Package = PreviousPackage });
         return DeployPlan.Create(package, new Dictionary<string, DeployTarget> { ["Web"] = new() { Path = target } }, config,
-            new FakeHostController(), BuildInfo.Version);
+            new FakeHostController(), BuildInfo.Version, CancellationToken.None);
     }
 
     [Fact]

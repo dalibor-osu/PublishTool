@@ -1,4 +1,6 @@
+using System.Text.Json;
 using PublishTool.Configuration;
+using PublishTool.Deployment;
 using PublishToolCli;
 using PublishToolCli.Output;
 
@@ -55,5 +57,27 @@ public class CliOutputTests
         Assert.Equal(expected, code);
         Assert.Equal(expected, result.ExitCode);
         Assert.Contains("boom", Assert.Single(result.Errors));
+    }
+
+    [Fact]
+    public void Warnings_CarryTheCompleteFileListIntoTheJson()
+    {
+        string[] files = [.. Enumerable.Range(1, DeployWarning.MaxListedFiles + 5).Select(i => $"Lib{i}.dll")];
+        var result = new DeployCliResult
+        {
+            Warnings = CliOutput.Warnings(
+                [
+                    new DeployWarning(WarningCodes.TargetModified, "capped", files),
+                    new DeployWarning(WarningCodes.ToolVersion, "no files")
+                ],
+                [WarningCodes.TargetModified])
+        };
+
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(result, CliJsonContext.Default.DeployCliResult));
+
+        var warnings = json.RootElement.GetProperty("warnings");
+        Assert.True(warnings[0].GetProperty("accepted").GetBoolean());
+        Assert.Equal(files, warnings[0].GetProperty("files").EnumerateArray().Select(f => f.GetString()));
+        Assert.False(warnings[1].TryGetProperty("files", out _));
     }
 }

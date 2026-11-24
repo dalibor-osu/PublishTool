@@ -1,4 +1,5 @@
 using PublishTool.Configuration;
+using PublishTool.Helpers;
 
 namespace PublishTool.Deployment;
 
@@ -42,7 +43,8 @@ public sealed class DeployPlan
         IReadOnlyDictionary<string, DeployTarget> mappings,
         ServerConfig config,
         IHostController hosts,
-        string toolVersion)
+        string toolVersion,
+        CancellationToken ct)
     {
         var plan = new DeployPlan(package);
         var manifest = package.Manifest;
@@ -65,6 +67,8 @@ public sealed class DeployPlan
             };
             plan.FillFiles(target);
             plan.CheckChain(target);
+            plan.CheckConfigFiles(target);
+            plan.CheckTargetContent(target, ct);
             plan.Targets.Add(target);
         }
 
@@ -103,7 +107,83 @@ public sealed class DeployPlan
 
         target.CreatedDirectories.AddRange(created.OrderByDescending(d => d.Length));
         target.Delete.AddRange(target.Project.Deleted
+            .Select(deleted => deleted.Path)
             .Where(deleted => !files.Contains(deleted) && File.Exists(PackagePaths.Resolve(target.TargetPath, deleted))));
+    }
+
+    private void CheckConfigFiles(TargetPlan target)
+    {
+        List<string> files = [.. target.Overwrite.Where(ConfigFiles.IsConfigFile), .. target.Delete.Where(ConfigFiles.IsConfigFile)];
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        var deleted = target.Delete.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        List<string> listed = [.. files.Select(f => deleted.Contains(f) ? $"{f} (deleted)" : f)];
+        Warnings.Add(new DeployWarning(WarningCodes.ConfigChanged,
+            $"{target.Project.Name}: the package overwrites or deletes {files.Count} config file(s) in {target.TargetPath}: "
+            + $"{DeployWarning.ListFiles(listed)}.",
+            files));
+    }
+
+    private void CheckTargetContent(TargetPlan target, CancellationToken ct)
+    {
+        var packageFiles = target.Project.Files
+            .DistinctBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(f => f.Path, StringComparer.OrdinalIgnoreCase);
+        var deletions = target.Project.Deleted
+            .DistinctBy(d => d.Path, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(d => d.Path, StringComparer.OrdinalIgnoreCase);
+        var expected = target.Overwrite
+            .Select(path => (Path: path, Hashes: new[] { packageFiles[path].Sha256, packageFiles[path].PreviousSha256 }))
+            .Concat(target.Delete.Select(path => (Path: path, Hashes: new string?[] { deletions[path].Sha256 })));
+
+        var modified = new List<string>();
+        var unreadable = new List<string>();
+        foreach (var (path, hashes) in expected)
+        {
+            ct.ThrowIfCancellationRequested();
+            switch (HasExpectedContent(PackagePaths.Resolve(target.TargetPath, path), hashes))
+            {
+                case false:
+                    modified.Add(path);
+                    break;
+                case null:
+                    unreadable.Add(path);
+                    break;
+            }
+        }
+
+        if (modified.Count + unreadable.Count > 0)
+        {
+            AddTargetModified(target, modified, unreadable);
+        }
+    }
+
+    private void AddTargetModified(TargetPlan target, List<string> modified, List<string> unreadable)
+    {
+        List<string> files = [.. modified, .. unreadable];
+        List<string> listed = [.. modified, .. unreadable.Select(f => $"{f} (could not be read)")];
+        Warnings.Add(new DeployWarning(WarningCodes.TargetModified,
+            $"{target.Project.Name}: {files.Count} file(s) in {target.TargetPath} are not what this package expects to overwrite or delete, "
+            + "so they were probably changed on the server or by a package that was skipped; the package replaces them: "
+            + $"{DeployWarning.ListFiles(listed)}.",
+            files));
+    }
+
+    private static bool? HasExpectedContent(string path, string?[] hashes)
+    {
+        try
+        {
+            string actual = FileHashing.Sha256(path);
+            return hashes.Any(h => string.Equals(h, actual, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Logger.LogWarning($"Could not read {path} to compare it with the package:\n{e}");
+            return null;
+        }
     }
 
     private void CheckChain(TargetPlan target)

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using PublishTool.Deployment;
 using PublishTool.Helpers;
 
@@ -11,14 +13,28 @@ public sealed class PackageBuilder(TempDirectory root, string name = "uat_2026-0
 
     public string ToolVersion { get; set; } = BuildInfo.Version;
 
+    public static string Sha256Of(string content) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
+
     public PackageBuilder Project(string project, string? basePackage, bool isFullPublish, IReadOnlyDictionary<string, string> files,
-        IReadOnlyList<string>? deleted = null)
+        IReadOnlyDictionary<string, string>? deleted = null, IReadOnlyDictionary<string, string>? previous = null)
     {
-        var manifestProject = new ManifestProject { Name = project, Base = basePackage, IsFullPublish = isFullPublish, Deleted = [.. deleted ?? []] };
+        var manifestProject = new ManifestProject
+        {
+            Name = project,
+            Base = basePackage,
+            IsFullPublish = isFullPublish,
+            Deleted = [.. (deleted ?? new Dictionary<string, string>()).Select(d => new ManifestDeletion { Path = d.Key, Sha256 = Sha256Of(d.Value) })]
+        };
         foreach (var (path, content) in files)
         {
             string file = root.Write($"packages/{name}/{project}/{path}", content);
-            manifestProject.Files.Add(new ManifestFile { Path = path, Size = new FileInfo(file).Length, Sha256 = FileHashing.Sha256(file) });
+            manifestProject.Files.Add(new ManifestFile
+            {
+                Path = path,
+                Size = new FileInfo(file).Length,
+                Sha256 = FileHashing.Sha256(file),
+                PreviousSha256 = previous is not null && previous.TryGetValue(path, out string? old) ? Sha256Of(old) : null
+            });
         }
 
         _projects.Add(manifestProject);

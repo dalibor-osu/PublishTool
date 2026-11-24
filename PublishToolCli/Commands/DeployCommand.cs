@@ -76,7 +76,7 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
                 + $"'{SelfUpdate.Cli.AppName} config --prefix {package.Manifest.Prefix} --target {first}=<absolute path>'");
         }
 
-        var plan = DeployPlan.Create(package, resolution.Targets, config, hosts, BuildInfo.Version);
+        var plan = DeployPlan.Create(package, resolution.Targets, config, hosts, BuildInfo.Version, ct);
         WritePlan(output, result, plan, verification, Options.Accept);
         if (plan.Errors.Count > 0)
         {
