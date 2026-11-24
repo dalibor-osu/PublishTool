@@ -1,6 +1,14 @@
 namespace PublishTool.Deployment;
 
-public sealed record DeployWarning(string Code, string Message);
+public sealed record DeployWarning(string Code, string Message, IReadOnlyList<string>? Files = null)
+{
+    public const int MaxListedFiles = 10;
+
+    public static string ListFiles(IReadOnlyList<string> files) =>
+        files.Count <= MaxListedFiles
+            ? string.Join(", ", files)
+            : $"{string.Join(", ", files.Take(MaxListedFiles))} and {files.Count - MaxListedFiles} more";
+}
 
 public static class WarningCodes
 {
@@ -11,6 +19,8 @@ public static class WarningCodes
     public const string UnknownBase = "unknown-base";
     public const string NoRecord = "no-record";
     public const string ChainMismatch = "chain-mismatch";
+    public const string ConfigChanged = "config-changed";
+    public const string TargetModified = "target-modified";
     public const string NewerDeploy = "newer-deploy";
     public const string Downgrade = "downgrade";
 
@@ -23,6 +33,8 @@ public static class WarningCodes
         UnknownBase,
         NoRecord,
         ChainMismatch,
+        ConfigChanged,
+        TargetModified,
         NewerDeploy,
         Downgrade
     ];

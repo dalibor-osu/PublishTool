@@ -12,11 +12,13 @@ PublishTool is a Windows-focused, Native AOT compiled .NET 11 tool that publishe
 a repository with MSBuild and, unless `-l/--local` is given, prepares an incremental deploy package:
 
 1. Builds all selected projects and their project references once (via a generated MSBuild traversal project).
+   Every MSBuild invocation gets the package prefix (the sanitized git branch) as the global property
+   `PublishToolPrefix`, so the published repository can choose its per-environment configs from it.
 2. Publishes every selected project in parallel into `<publish dir>\<ProjectName>` (cleared first).
 3. Without `--local`: downloads the previous full publish of the current git branch from a shared network
    directory (stored there as a single zip), extracts and compares it locally, writes only the changed files
-   plus a manifest (hashes, deleted files, base package) into a local package directory, and uploads a new zip
-   of the full publish as the reference for next time.
+   plus a manifest (hashes of new and replaced files, deleted files, base package) into a local package directory,
+   and uploads a new zip of the full publish as the reference for next time.
 
 On the server, `deploy` applies such a package to the IIS apps and Windows services mapped for its branch
 prefix (backup, stop, copy and delete, start, with automatic rollback on any failure), and `rollback` undoes
@@ -48,6 +50,7 @@ PublishTool.Core/                 Shared library (net11.0, IsAotCompatible, no S
   ProjectScanner.cs               Finds *.csproj recursively, detects Sdk / LegacyWeb / LegacyLibrary, SelectByName
   DependencyBuild.cs              Writes a temp traversal .proj that restores + builds all projects with /m
   PublishCommandBuilder.cs        Builds the MSBuild command line per project kind
+  MsBuildProperties.cs            PublishToolPrefix (property name) and PrefixProblem (which prefixes MSBuild can take)
   Configuration/                  Config file handling (no wizards)
     Config.cs                     Current config model (format version 2): Directories map of DirectorySettings;
                                   DirectorySettings.With(SettingsOverrides), MissingFor(local, projectsGiven), SettingKeys
@@ -63,7 +66,8 @@ PublishTool.Core/                 Shared library (net11.0, IsAotCompatible, no S
   Deployment/                     Package manifest, lineage and everything deploy and rollback do
     PackageManifest.cs / ReferenceLineage.cs / PackageJson.cs / PackagePaths.cs / DeployPackage.cs / DeployJournal.cs
     DeployPlan.cs                 Per target: files to create / overwrite / delete, coded warnings, errors
-    DeployWarning.cs              DeployWarning(Code, Message) and WarningCodes (the stable codes --accept takes)
+    DeployWarning.cs              DeployWarning(Code, Message, Files) and WarningCodes (the stable codes --accept takes)
+    ConfigFiles.cs                The fixed config file name patterns behind the config-changed warning
     DeployExecutor.cs             Backup, Apply and the idempotent Restore
     DeployRunner.cs               Deploy as steps incl. rollback on failure; returns DeployOutcome (Deployed/Failed/RestoreFailed)
     RollbackRunner.cs             Rollback as steps; CheckChain gives the newer-deploy warnings
@@ -110,7 +114,9 @@ docs/impl/                        Implementation notes per spec
 ## Tests
 
 `PublishTool.Tests` (xUnit, references `PublishTool.Core` and `PublishToolCli`) runs from the IDE test runner or with
-`dotnet test PublishTool.Tests`. It covers path escaping, config migration, deploy planning and its warning codes,
+`dotnet test PublishTool.Tests`. It covers path escaping, the `PublishToolPrefix` on every MSBuild command line and
+which prefixes are accepted, config migration, deploy planning and its warning codes (including `config-changed`
+and `target-modified` with their file lists),
 backup/apply/restore, the deploy and rollback runners (with `FakeHostController` and a sandboxed
 `ConfigStore<ServerConfig>`, no administrator rights), change collection and lineage, target and settings overrides
 (including that overrides never change the stored config), self-update asset names and the CLI option parsing.
@@ -212,14 +218,17 @@ so `auto` bump works.
   when they were cancelled. Text mode writes progress and results to stdout and `error: ...` lines to stderr; `--json` moves
   every progress line to stderr, and the log-file notice of `Logger.Write` always goes to stderr. The JSON carries
   `schemaVersion` (`CliResult.CurrentSchemaVersion`, independent of the tool version): within one schema version
-  changes are additive only; renaming or removing a field means a new schema version.
+  changes are additive only; renaming or removing a field means a new schema version. A warning about files
+  (`config-changed`, `target-modified`) names the first `DeployWarning.MaxListedFiles` in its message and carries the
+  complete list in its `files` field; other warnings have no `files`.
 - **CLI exit codes** (`ExitCodes`): 0 success (a dry run whose package and plan are valid exits 0 whatever warnings
   it lists; verification or plan errors are 1, missing targets 2), 1 failed, 2 invalid arguments or missing
   configuration, 3 stopped on warnings not accepted with `--accept`, 4 a deploy failed and its automatic restore failed
   too (journal `RestoreFailed`, run `rollback`), 130 cancelled. Missing administrator rights for `--yes` is exit 1.
   The TUI keeps 0/1.
 - **Warning codes** (`WarningCodes`): `tool-version`, `target-missing`, `already-deployed`, `full-publish`,
-  `unknown-base`, `no-record`, `chain-mismatch` (deploy), `newer-deploy` (rollback), `downgrade` (CLI update). They are
+  `unknown-base`, `no-record`, `chain-mismatch`, `config-changed`, `target-modified` (deploy), `newer-deploy`
+  (rollback), `downgrade` (CLI update). They are
   part of the CLI's public contract: never rename one, and give a new check a new code so existing scripts never
   accept it by accident.
 - **Going back in prompts** (TUI): Spectre prompts have no back key, so a prompt that should support it is shown on
@@ -293,6 +302,14 @@ so `auto` bump works.
   The TUI offers the publishable projects of the directory config; the CLI publishes them by default, or the
   projects named with `--projects`, looked up by exact name (case-insensitive) among all projects in the directory
   (`ProjectScanner.SelectByName` rejects unknown and ambiguous names).
+- **The prefix property** (`MsBuildProperties`): the package prefix is resolved once per publish run, before the build
+  (also with `--local`), and passed as `PublishToolPrefix=<prefix>` to the traversal project's restore and build and
+  to every publish, for all project kinds; the same value names the package and goes into the manifest. It is the
+  sanitized branch, or `DEPLOY` outside git, and is always passed, so a consumer treats unknown values as "no
+  environment". The tool knows nothing about environments: mapping a prefix to configs is the published repository's
+  business (e.g. its `Directory.Build.props`). A prefix with any character but letters, digits, `.`, `_`, `-` and `+`
+  (`;`, `,`, `=`, `$`, `%`, ... are special to MSBuild) fails the build step before anything runs, instead of being
+  escaped. The property name is public contract: never rename it.
 - **Code style**: `.editorconfig` at the root, file-scoped namespaces, primary constructors, collection
   expressions, `Lock` type, C# 14 `extension` blocks (see `StringExtensions`). Nullable is enabled and the
   build should stay warning-free. All text files use LF line endings, in the repository and in the working
@@ -315,7 +332,7 @@ so `auto` bump works.
 Runs after every publish unless `-l/--local` is given, the same way in both executables (`PublishWorkflow`).
 
 Naming: `<prefix>_<yyyy-MM-dd_HH-mm-ss>` where prefix is the sanitized current git branch (`DEPLOY` if
-not in a git repo). The shared directory contains **only zip files** named `<name>.zip`, project
+not in a git repo), the same value the build got as `PublishToolPrefix`. The shared directory contains **only zip files** named `<name>.zip`, project
 directories at the archive root (`Web/...`, `Api/...`), created with `CompressionLevel.Fastest`.
 
 Steps, each its own step in the UI (five deploy steps in total):
@@ -326,8 +343,12 @@ Steps, each its own step in the UI (five deploy steps in total):
    zip or delete it, because ignoring it would produce an "everything changed" deploy.
 2. **Collect changes**: every file of every published project is compared byte-wise with the extracted
    reference; changed or new files are copied to `<deploy dir>\<name>\<Project>\...` and listed in the
-   manifest with size and SHA-256. Files in the reference but missing from the new publish are listed as
-   deletions (case-insensitive, so a case-only rename is never a deletion). A project with no changes and no
+   manifest with size and SHA-256, plus `PreviousSha256`, the hash of the file in the reference it replaces
+   (absent for a file that is new in this publish). Files in the reference but missing from the new publish are
+   listed as deletions with the SHA-256 of the deleted file (case-insensitive, so a case-only rename is never a
+   deletion). These hashes let `deploy` see files that were changed on the server. The manifest format is still
+   1: no package was deployed with the earlier shape, so it changed in place; from now on a shape change means a
+   new format. A project with no changes and no
    deletions is left out of the manifest. Each project's `Base` is the package that last published it,
    read from the reference's lineage; `IsFullPublish` is set when the reference did not contain the project.
    The manifest is written to the `.tmp` work directory here.
@@ -346,7 +367,7 @@ Steps, each its own step in the UI (five deploy steps in total):
    parses as `<prefix>_<timestamp>` are touched; old-workflow directories, other branches and `.uploading`
    leftovers are ignored. A failed delete is logged and shown but does not fail the publish.
 
-The result (`PublishResult`: package name and directory, new and previous reference, per-project change counts,
+The result (`PublishResult`: prefix, package name and directory, new and previous reference, per-project change counts,
 carried projects, pruned archives) is what the CLI prints and puts into its JSON.
 
 Design intent: the shared directory is on a slow remote server, so it must only ever see whole-file
@@ -382,7 +403,19 @@ targets without IIS. Warnings carry codes (see `WarningCodes`): the package was 
 and the chain check per target: the target's `Deployed` record must equal the project's `Base`; an unknown base
 (`unknown-base`), a missing record (`no-record`), a mismatch, i.e. a skipped or out-of-order package
 (`chain-mismatch`), the package already deployed there (`already-deployed`), or a full publish onto a deployed target
-(`full-publish`) all warn.
+(`full-publish`) all warn. Two file checks follow per target, one warning each with the files attached:
+
+- `config-changed`: the plan overwrites or deletes config files (`ConfigFiles`: `web.config`, `*.exe.config`,
+  `*.dll.config`, `appsettings.json`, `appsettings.*.json`, by file name, case-insensitive). Config files the
+  package creates on the target do not warn.
+- `target-modified`: every file the plan overwrites is hashed on the target and must equal the manifest's
+  `PreviousSha256` or the new `Sha256` (a re-deploy); a file without `PreviousSha256` that already exists with other
+  content is reported too. Every file the plan deletes must equal the hash recorded for the deletion. A file that
+  cannot be read is reported as "(could not be read)", never treated as unmodified. The check also runs when the
+  chain check warns or for a full publish, where most existing files differ (it lists them next to the chain warning
+  that explains why). Hand edits to files the package does not contain stay invisible.
+
+Both checks hash in the preflight, before the backup, also in a dry run.
 
 - **TUI** (`PublishTool deploy`): asks for missing targets in a wizard and stores them, shows the summary, asks to
   accept warnings (default no) or to confirm; `--dry-run` stops after the summary.
@@ -461,7 +494,9 @@ PublishToolCli <command> [options]           non-interactive CLI, never prompts
    Unattended: `PublishToolCli deploy -dir <package>` (dry run, review the warnings), then
    `PublishToolCli deploy -dir <package> --yes --accept <codes you reviewed>`. Deploy packages of a branch in order;
    the tool warns when one was skipped. Config files are deployed like any other file, so the app itself must ship
-   correct per-environment configs. Keep the package directory: it holds the backup. `rollback -dir <package>`
+   correct per-environment configs (it can pick them from the `PublishToolPrefix` MSBuild property). Deploy warns
+   with `config-changed` when it overwrites or deletes a config file and with `target-modified` when a file on the
+   server is not what the package expects to replace; `PublishToolCli deploy --dry-run --json` lists all files. Keep the package directory: it holds the backup. `rollback -dir <package>`
    (with `--yes` in the CLI) undoes the deploy.
 4. **Update the tool**: `PublishTool update` / `PublishToolCli update` (or `update --fetch` to only check); each
    replaces only its own executable. Dev builds cannot update. The previous executable is kept as `<exe>.old` and

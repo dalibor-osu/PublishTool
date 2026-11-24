@@ -6,8 +6,9 @@ public static class DependencyBuild
 {
     private const string RuntimeProperties = "RuntimeIdentifier=win-x64;SelfContained=false";
 
-    public static string WriteTraversalProject(IReadOnlyList<DotnetProject> projects, string configuration)
+    public static string WriteTraversalProject(IReadOnlyList<DotnetProject> projects, string configuration, string prefix)
     {
+        string globalProperties = $"Configuration={configuration};{MsBuildProperties.Prefix}={prefix}";
         string dir = Path.Combine(Path.GetTempPath(), "PublishTool");
         Directory.CreateDirectory(dir);
         string path = Path.Combine(dir, $"publish-{Guid.NewGuid():N}.proj");
@@ -25,10 +26,10 @@ public static class DependencyBuild
         sb.AppendLine("  </ItemGroup>");
 
         sb.AppendLine("  <Target Name=\"Restore\">");
-        sb.AppendLine($"    <MSBuild Projects=\"@(PublishProject)\" Condition=\"'%(PublishProject.NeedsRestore)' == 'true'\" Targets=\"Restore\" Properties=\"Configuration={configuration};RestoreForce=true\" BuildInParallel=\"false\" />");
+        sb.AppendLine($"    <MSBuild Projects=\"@(PublishProject)\" Condition=\"'%(PublishProject.NeedsRestore)' == 'true'\" Targets=\"Restore\" Properties=\"{globalProperties};RestoreForce=true\" BuildInParallel=\"false\" />");
         sb.AppendLine("  </Target>");
         sb.AppendLine("  <Target Name=\"Build\">");
-        sb.AppendLine($"    <MSBuild Projects=\"@(PublishProject)\" Targets=\"Build\" Properties=\"Configuration={configuration}\" BuildInParallel=\"true\" />");
+        sb.AppendLine($"    <MSBuild Projects=\"@(PublishProject)\" Targets=\"Build\" Properties=\"{globalProperties}\" BuildInParallel=\"true\" />");
         sb.AppendLine("  </Target>");
         sb.AppendLine("</Project>");
 

@@ -116,6 +116,7 @@ public class PublishCommand(PublishCommandOptions options) : ICommand<PublishCom
 
     private static void Fill(PublishCliResult result, PublishResult published)
     {
+        result.Prefix = published.Prefix;
         result.PackageName = published.PackageName;
         result.PackageDirectory = published.PackageDirectory;
         result.Reference = published.Reference;

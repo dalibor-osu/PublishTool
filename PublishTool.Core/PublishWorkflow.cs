@@ -16,6 +16,8 @@ public sealed class PublishResult
 
     public bool Succeeded => !Failed && !Cancelled;
 
+    public string? Prefix { get; set; }
+
     public string? PackageName { get; set; }
 
     public string? PackageDirectory { get; set; }
@@ -127,19 +129,21 @@ public sealed class PublishWorkflow
 
     private async Task PublishAll(CancellationToken ct)
     {
-        bool built = await BuildDependencies(ct);
-        if (!built)
+        string? prefix = await ResolvePrefix(ct);
+        if (prefix is null)
         {
-            foreach (var (_, row) in _publishRows)
-            {
-                row.Finish(ct.IsCancellationRequested ? StepState.Cancelled : StepState.Skipped, "build failed");
-            }
-
-            SkipDeploy("build failed", ct);
+            SkipPublishes("no usable package prefix", ct);
             return;
         }
 
-        await Task.WhenAll(_publishRows.Select(item => PublishProject(item.Command, item.Row, ct)));
+        bool built = await BuildDependencies(prefix, ct);
+        if (!built)
+        {
+            SkipPublishes("build failed", ct);
+            return;
+        }
+
+        await Task.WhenAll(_publishRows.Select(item => PublishProject(item.Command, prefix, item.Row, ct)));
 
         if (_deployStep is null)
         {
@@ -152,7 +156,43 @@ public sealed class PublishWorkflow
             return;
         }
 
-        await PrepareDeploy(_deployStep, ct);
+        await PrepareDeploy(_deployStep, prefix, ct);
+    }
+
+    private async Task<string?> ResolvePrefix(CancellationToken ct)
+    {
+        string prefix;
+        try
+        {
+            prefix = await DeployPreparer.ResolvePrefixAsync(_workingDirectory, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            _buildRow.Finish(StepState.Cancelled);
+            return null;
+        }
+
+        _result.Prefix = prefix;
+        if (MsBuildProperties.PrefixProblem(prefix) is { } problem)
+        {
+            _hasError = true;
+            Logger.LogError(problem);
+            _buildRow.Finish(StepState.Failed, problem);
+            return null;
+        }
+
+        _buildRow.Name = $"Building projects and their dependencies ({MsBuildProperties.Prefix}={prefix})";
+        return prefix;
+    }
+
+    private void SkipPublishes(string reason, CancellationToken ct)
+    {
+        foreach (var (_, row) in _publishRows)
+        {
+            row.Finish(ct.IsCancellationRequested ? StepState.Cancelled : StepState.Skipped, reason);
+        }
+
+        SkipDeploy(reason, ct);
     }
 
     private void SkipDeploy(string reason, CancellationToken ct)
@@ -169,7 +209,7 @@ public sealed class PublishWorkflow
         }
     }
 
-    private async Task PrepareDeploy(DeployStep step, CancellationToken ct)
+    private async Task PrepareDeploy(DeployStep step, string prefix, CancellationToken ct)
     {
         var (preparer, downloadRow, changesRow, archiveRow, uploadRow, pruneRow) = step;
         string? name = null;
@@ -178,7 +218,6 @@ public sealed class PublishWorkflow
         string? uploading = null;
         try
         {
-            string prefix = await DeployPreparer.ResolvePrefixAsync(_workingDirectory, ct);
             name = DeployPreparer.DirectoryName(prefix, DateTimeOffset.Now);
             string? previousReference = preparer.FindPreviousReference(prefix);
             work = preparer.WorkPath(name);
@@ -293,9 +332,9 @@ public sealed class PublishWorkflow
         }
     }
 
-    private async Task<bool> BuildDependencies(CancellationToken ct)
+    private async Task<bool> BuildDependencies(string prefix, CancellationToken ct)
     {
-        string traversalProject = DependencyBuild.WriteTraversalProject(_projects, _configuration);
+        string traversalProject = DependencyBuild.WriteTraversalProject(_projects, _configuration, prefix);
         try
         {
             return await RunMsBuild(DependencyBuild.BuildCommand(traversalProject), _buildRow, ct);
@@ -306,7 +345,7 @@ public sealed class PublishWorkflow
         }
     }
 
-    private async Task<bool> PublishProject(PublishCommandBuilder command, IStep row, CancellationToken ct)
+    private async Task<bool> PublishProject(PublishCommandBuilder command, string prefix, IStep row, CancellationToken ct)
     {
         try
         {
@@ -323,7 +362,7 @@ public sealed class PublishWorkflow
             return false;
         }
 
-        return await RunMsBuild(command.BuildCommand(), row, ct);
+        return await RunMsBuild(command.BuildCommand(prefix), row, ct);
     }
 
     private async Task<bool> RunMsBuild(string arguments, IStep row, CancellationToken ct)

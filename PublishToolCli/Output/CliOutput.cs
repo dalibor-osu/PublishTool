@@ -44,7 +44,7 @@ public sealed class CliOutput(bool json, bool verbose)
 
     public static List<CliWarning> Warnings(IEnumerable<DeployWarning> warnings, IReadOnlyCollection<string> accepted) =>
     [
-        .. warnings.Select(w => new CliWarning(w.Code, w.Message, accepted.Contains(w.Code, StringComparer.OrdinalIgnoreCase)))
+        .. warnings.Select(w => new CliWarning(w.Code, w.Message, accepted.Contains(w.Code, StringComparer.OrdinalIgnoreCase), w.Files))
     ];
 
     public async Task<int> RunAsync<TResult>(TResult result, JsonTypeInfo<TResult> typeInfo, Func<Task<int>> body, CancellationToken ct)

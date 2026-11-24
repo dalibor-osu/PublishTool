@@ -308,8 +308,8 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
             ct.ThrowIfCancellationRequested();
             string relative = Path.GetRelativePath(source, file);
             current.Add(relative);
-            string? previousFile = previousProject is null ? null : Path.Combine(previousProject, relative);
-            if (previousFile is not null && File.Exists(previousFile) && FilesAreEqual(file, previousFile))
+            string? previousFile = PreviousFile(previousProject, relative);
+            if (previousFile is not null && FilesAreEqual(file, previousFile))
             {
                 continue;
             }
@@ -320,7 +320,8 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
             {
                 Path = PackagePaths.ToManifest(relative),
                 Size = new FileInfo(destination).Length,
-                Sha256 = FileHashing.Sha256(destination)
+                Sha256 = FileHashing.Sha256(destination),
+                PreviousSha256 = previousFile is null ? null : FileHashing.Sha256(previousFile)
             });
             report(Path.Combine(project, relative));
         }
@@ -333,13 +334,24 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
                 string relative = Path.GetRelativePath(previousProject, file);
                 if (!current.Contains(relative))
                 {
-                    collected.Deleted.Add(PackagePaths.ToManifest(relative));
+                    collected.Deleted.Add(new ManifestDeletion { Path = PackagePaths.ToManifest(relative), Sha256 = FileHashing.Sha256(file) });
                     report($"{Path.Combine(project, relative)} (deleted)");
                 }
             }
         }
 
         return collected;
+    }
+
+    private static string? PreviousFile(string? previousProject, string relative)
+    {
+        if (previousProject is null)
+        {
+            return null;
+        }
+
+        string path = Path.Combine(previousProject, relative);
+        return File.Exists(path) ? path : null;
     }
 
     private static string? FindPublisher(ReferenceLineage? lineage, string project)

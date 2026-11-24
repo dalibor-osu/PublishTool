@@ -19,7 +19,8 @@ public class DeployCommandOptions
 
     [Option("--accept", Parser = nameof(ParseAccept), ValueName = "codes",
         Description = "Comma separated warning codes to accept; any other warning stops the deploy with exit code 3. "
-        + "Codes: tool-version, target-missing, already-deployed, full-publish, unknown-base, no-record, chain-mismatch")]
+        + "Codes: tool-version, target-missing, already-deployed, full-publish, unknown-base, no-record, chain-mismatch, config-changed, "
+        + "target-modified")]
     public List<string> Accept { get; set; } = [];
 
     [Option("--target", Parser = nameof(ParseTarget), ValueName = "project=path",
