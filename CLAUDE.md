@@ -8,8 +8,8 @@ Guidance for AI agents (and humans) working in this repository. Additional info 
 
 ## What PublishTool is
 
-PublishTool is a Windows-focused, Native AOT compiled .NET 11 console tool that publishes one or more .NET
-projects from a repository with MSBuild and, unless `-l/--local` is given, prepares an incremental deploy package:
+PublishTool is a Windows-focused, Native AOT compiled .NET 11 tool that publishes one or more .NET projects from
+a repository with MSBuild and, unless `-l/--local` is given, prepares an incremental deploy package:
 
 1. Builds all selected projects and their project references once (via a generated MSBuild traversal project).
 2. Publishes every selected project in parallel into `<publish dir>\<ProjectName>` (cleared first).
@@ -22,80 +22,104 @@ On the server, `deploy` applies such a package to the IIS apps and Windows servi
 prefix (backup, stop, copy and delete, start, with automatic rollback on any failure), and `rollback` undoes
 a deploy. See "The server deploy" below; the design is in `docs/specs/2026-11-23-server-deploy-command.md`.
 
-It also updates itself from GitHub releases (`dalibor-osu/PublishTool`). The interactive UI uses Spectre.Console.
+It ships as two independent executables over one core library (design: `docs/specs/2026-11-24-non-interactive-cli.md`):
+
+- **PublishTool**: the interactive TUI (Spectre.Console prompts, wizards, a redrawn progress table). It never
+  runs unattended.
+- **PublishToolCli**: the non-interactive CLI for scripts and AI agents. Every input is an option, stored
+  settings fill in the rest, nothing ever prompts or waits for a key; plain text output by default, one JSON
+  result with `--json`, distinct exit codes. It has no Spectre dependency.
+
+Both read and write the same config files and update themselves (each only itself) from GitHub releases
+(`dalibor-osu/PublishTool`).
 
 ## Repository layout
 
 ```
-PublishTool.slnx                  Solution (two projects)
-Directory.Build.props             Repo-wide MSBuild props: references SonarAnalyzer.CSharp in both projects
-PublishTool/                      The CLI (net11.0, PublishAot, InvariantGlobalization)
-  Program.cs                      Entry point: Ctrl+C -> CancellationToken, parse args, run command, write log
-  Commands/                       One class per command, [Command("name")] + ICommand<TOptions>
-    Options/                      One options class per command, properties marked with [Option(...)]
-    PublishCommand.cs             The main workflow (build, publish, deploy step) and the live progress UI
-    DeployCommand.cs              Server side: verify a package, plan, confirm, run DeployRunner (Windows, admin)
-    RollbackCommand.cs            Server side: restore a deployed package's backup, run RollbackRunner (Windows, admin)
-    ConfigCommand.cs              Forces the interactive config wizard for a directory
-    UpdateCommand.cs              Self-update from GitHub releases (download, extract, swap exe, .old backup)
-    VersionCommand.cs / HelpCommand.cs
+PublishTool.slnx                  Solution (five projects)
+Directory.Build.props             Repo-wide MSBuild props: references SonarAnalyzer.CSharp in every project
+PublishTool.Core/                 Shared library (net11.0, IsAotCompatible, no Spectre); RootNamespace PublishTool
+  BuildInfo (generated)           public BuildInfo.Version from -p:BuildVersion ("dev" otherwise), used by both exes
+  Commands/ICommand.cs            ICommand / ICommand<TOptions> (ExecuteAsync only), consumed by the generator
   Attributes/                     CommandAttribute, OptionAttribute (consumed by the source generator)
-  Configuration/                  Config file handling
-    Config.cs                     Current config model (format version 2): Version + Directories map of DirectorySettings
-    ConfigHandler.cs              Load(workingDir) = load file + wizard for missing settings, returns the DirectorySettings
+  Progress/IStep.cs               The progress seam: IStepList.Add(name) -> IStep (Start, AppendLine, Finish, StepState)
+  PublishWorkflow.cs              Build, publish and deploy preparation as steps; returns PublishResult; BuildConfigurations
+  DeployPreparer.cs               The deploy preparation logic (download, compare, zip, upload, prune)
+  ProjectScanner.cs               Finds *.csproj recursively, detects Sdk / LegacyWeb / LegacyLibrary, SelectByName
+  DependencyBuild.cs              Writes a temp traversal .proj that restores + builds all projects with /m
+  PublishCommandBuilder.cs        Builds the MSBuild command line per project kind
+  Configuration/                  Config file handling (no wizards)
+    Config.cs                     Current config model (format version 2): Directories map of DirectorySettings;
+                                  DirectorySettings.With(SettingsOverrides), MissingFor(local, projectsGiven), SettingKeys
     ConfigStore.cs                Load/save with version detection, migrator chain, backup of migrated files
     ConfigVersions.cs             Registry: Current version, parsers per version, migrators per step
-    ConfigParser.cs               IConfigParser + ConfigParser<TModel> (one per readable version)
-    ConfigMigrator.cs             IConfigMigrator + ConfigMigrator<TFrom,TTo> base class (one per version step)
-    ConfigEnvelope.cs             Only the Version field, read first to pick the parser
-    IVersionedConfig.cs           Implemented by the current model so the store can stamp the version
-    ConfigException.cs            User-facing config error, printed in red by Program.cs
-    JsonContext.cs                Source-generated JSON metadata for every readable config model
+    ConfigParser.cs / ConfigMigrator.cs / ConfigEnvelope.cs / IVersionedConfig.cs / ConfigException.cs
+    JsonContext.cs                Source-generated JSON metadata for every readable config model and package file
     Versions/ConfigV1.cs          Frozen snapshot of format version 1 (five parallel dictionaries); never edit
     Migrations/ConfigV1ToV2.cs    Migrator 1 -> 2 (merges the dictionaries per directory)
     ServerConfig.cs               Server settings (own format version): Environments per prefix + Deployed records per path
     ServerConfigVersions.cs       Registry of the server settings file (parsers, migrators), separate from ConfigVersions
-    ServerConfigHandler.cs        ResolveTargets: wizard for missing target paths / service names of a prefix
-  Deployment/                     Package manifest, lineage and everything the deploy and rollback commands do
-    PackageManifest.cs            publishtool-manifest.json model (files with size + SHA-256, deletions, base per project)
-    ReferenceLineage.cs           publishtool-lineage.json in the reference zip: project -> package that last published it
-    PackageJson.cs                Read/write of manifest, lineage and journal with format checks (temp file + move)
-    PackagePaths.cs               Manifest path <-> native path, Resolve() rejects paths escaping the root
-    DeployPackage.cs              Loads a package directory, verifies files against the manifest, lists extra files
-    DeployPlan.cs                 Per target: files to create / overwrite / delete, chain and version warnings, errors
-    DeployJournal.cs              <package>\.backup\journal.json model (state, backed up and created files, previous record)
+    DeployTargets.cs              Resolve(config, prefix, projects, overrides): targets + missing, never mutates the config
+  Deployment/                     Package manifest, lineage and everything deploy and rollback do
+    PackageManifest.cs / ReferenceLineage.cs / PackageJson.cs / PackagePaths.cs / DeployPackage.cs / DeployJournal.cs
+    DeployPlan.cs                 Per target: files to create / overwrite / delete, coded warnings, errors
+    DeployWarning.cs              DeployWarning(Code, Message) and WarningCodes (the stable codes --accept takes)
     DeployExecutor.cs             Backup, Apply and the idempotent Restore
-    HostSet.cs                    Which of IIS / services to stop and start again, in the right order
-    IHostController.cs            Seam for IIS and service control; WindowsHostController is the real one
-    DeployRunner.cs / RollbackRunner.cs   JobDisplay rows and the flow including rollback on failure
-  ProjectScanner.cs               Finds *.csproj recursively, detects Sdk / LegacyWeb / LegacyLibrary
-  DependencyBuild.cs              Writes a temp traversal .proj that restores + builds all projects with /m
-  PublishCommandBuilder.cs        Builds the MSBuild command line per project kind
-  DeployPreparer.cs               The deploy logic, skipped with --local (download, compare, zip, upload)
-  Console/JobDisplay.cs           JobRow/JobDisplay: the redrawn progress table (spinner, tail of output)
-  Console/JobDisplayRunner.cs     Redraw loop for a JobDisplay while work runs (live) or a single render at the end
+    DeployRunner.cs               Deploy as steps incl. rollback on failure; returns DeployOutcome (Deployed/Failed/RestoreFailed)
+    RollbackRunner.cs             Rollback as steps; CheckChain gives the newer-deploy warnings
+    HostSet.cs / IHostController.cs / WindowsHostController.cs
+  GitHub/                         GitHubClient (releases API, GetVersionAsync), ReleaseVersion (semver, FindAssetUrl),
+                                  SelfUpdate (per executable: asset name, find, download, extract, swap exe, .old backup)
+  Helpers/                        ProcessHelper, EnvironmentHelper, OptionParsers, FileHashing, WindowsAccount,
+                                  CriticalSection (swallows Ctrl+C)
+  Logger.cs                       In-memory log flushed to %APPDATA%\PublishTool\Logs\<date>.log; Write(report) says where
+PublishTool/                      The TUI exe (PublishAot, InvariantGlobalization); RootNamespace PublishTool
+  Program.cs                      Ctrl+C -> CancellationToken, removed-switch check, parse args, run command, write log
+  RemovedSwitches.cs              Points users of the removed publish -a / deploy -y / rollback -y to PublishToolCli
+  Commands/                       One class per command, [Command("name")] + ICommand<TOptions>; Options/ per command
+    IAlternateScreenCommand.cs    Commands that run inside the alternate screen and wait for a key at the end
+    PublishCommand.cs             Prompts for projects and configuration, runs PublishWorkflow on a JobDisplay
+    DeployCommand.cs / RollbackCommand.cs   Summary, confirmation, runners on a JobDisplay (Windows, admin)
+    ConfigCommand.cs              Forces the interactive config wizard for a directory
+    UpdateCommand.cs / VersionCommand.cs / HelpCommand.cs
+  Configuration/ConfigHandler.cs  Load(workingDir) = load file + wizard for missing settings, returns the DirectorySettings
+  Configuration/ServerConfigHandler.cs   ResolveTargets: wizard for missing target paths / service names of a prefix
+  Console/JobDisplay.cs           JobRow (an IStep) / JobDisplay (an IStepList): the redrawn progress table
+  Console/JobDisplayRunner.cs     Redraw loop for a JobDisplay while work runs
   Console/DeploySummary.cs        Summary table, warnings/errors and the accept/confirm prompt of deploy and rollback
   Console/BackKeyConsole.cs       IAnsiConsole wrapper whose input throws BackRequestedException on Esc / Left arrow
-  GitHub/                         GitHubClient (releases API), ReleaseVersion (semver + rc parsing/compare)
-  Helpers/                        ProcessHelper (run process, stream output), EnvironmentHelper, OptionParsers,
-                                  FileHashing, WindowsAccount (admin check), CriticalSection (swallows Ctrl+C)
-  Logger.cs                       In-memory log flushed to %APPDATA%\PublishTool\Logs\<date>.log on exit
+PublishToolCli/                   The CLI exe (PublishAot, InvariantGlobalization, no Spectre); RootNamespace PublishToolCli
+  Program.cs                      Ctrl+C handling, parse args (no default command), run, log path to stderr
+  ExitCodes.cs                    Exit code constants, status names, help text; CliArgumentException (exit 2)
+  OptionValues.cs                 Shared option value parsers: lists, absolute paths, warning codes, project=value pairs
+  Commands/                       publish, config, deploy, rollback, update, version, help; Options/ per command
+  Output/CliOutput.cs             Text vs --json output, error lines, RunAsync (exception -> exit code, prints the result)
+  Output/LineSteps.cs             IStepList printing one line per step start and finish, output tail only on failure
+  Output/CliResults.cs            JSON result types per command + CliJsonContext (camelCase, schema version)
 PublishTool.Generators/           Roslyn incremental source generator (netstandard2.0, Scriban templates)
-  CommandParserGenerator.cs       Collects [Command] classes + [Option] properties into a model
-  Emitter.cs + Templates/*.sbncs  Renders PublishTool.Generated.CommandParsers (parsing + help text)
+  CommandParserGenerator.cs       Collects [Command] classes + [Option] properties, reads build_property.RootNamespace
+  Emitter.cs + Templates/*.sbncs  Renders <RootNamespace>.Generated.CommandParsers (parsing + help text)
   Diagnostics.cs                  PT0001..PT0008 compile errors for bad command/option declarations
-.github/workflows/release.yml     Manual release: semver from Conventional Commits, AOT build for 6 RIDs
+PublishTool.Tests/                xUnit tests of the core and the CLI parsing (temp directories, FakeHostController)
+.github/workflows/release.yml     Manual release: semver from Conventional Commits, AOT build of both exes for 6 RIDs
 TestApps/                         Four sample apps (Core/Framework x IIS/service) + scripts for an end-to-end deploy test
 docs/specs/                       Agreed design specifications
+docs/impl/                        Implementation notes per spec
 ```
 
-There are no automated tests in the repo. Verify changes by building and by running the dev binary
-(see below); for `DeployPreparer` logic a throwaway console project that includes the source file works well.
-For deploy and rollback logic, a throwaway console project that compiles `PublishTool/**/*.cs` (minus
-`Program.cs`, plus its own `BuildInfo` class) can drive `DeployPlan`, `DeployRunner` and `RollbackRunner` with
-a fake `IHostController` and a `ConfigStore<ServerConfig>` pointed at a sandbox path, without administrator
-rights. `TestApps/README.md` has the elevated end-to-end test with real IIS sites and services. `publish`
-needs a real terminal (alternate screen); `deploy`/`rollback` with `-y` run without one.
+## Tests
+
+`PublishTool.Tests` (xUnit, references `PublishTool.Core` and `PublishToolCli`) runs from the IDE test runner or with
+`dotnet test PublishTool.Tests`. It covers path escaping, config migration, deploy planning and its warning codes,
+backup/apply/restore, the deploy and rollback runners (with `FakeHostController` and a sandboxed
+`ConfigStore<ServerConfig>`, no administrator rights), change collection and lineage, target and settings overrides
+(including that overrides never change the stored config), self-update asset names and the CLI option parsing.
+Tests never use `ConfigStore.Default` or `ConfigStore.Server`, which point at the real config of the machine.
+
+Not covered: the TUI (prompts, alternate screen), MSBuild publishing and real IIS/services. `publish` of the TUI needs
+a real terminal. The CLI can be exercised end to end against a throwaway git repository with only per-run overrides
+(see `docs/impl/2026-11-24-non-interactive-cli.md`), and `TestApps/README.md` has the elevated end-to-end test with
+real IIS sites and services.
 
 ## Development commands
 
@@ -103,56 +127,102 @@ Requirements: .NET SDK 11.x (`dotnet --version`), and MSBuild on `PATH` to actua
 (Visual Studio / Build Tools; the tool calls `MSBuild` by name, not `dotnet build`).
 
 ```powershell
-# Build (Debug produces PublishTool-dev.exe, version "dev")
-dotnet build PublishTool/PublishTool.csproj -c Debug
+# Build everything (Debug produces PublishTool-dev.exe and PublishToolCli-dev.exe, version "dev")
+dotnet build PublishTool.slnx -c Debug
 
 # Full static analysis pass: forces a recompile so every Sonar (S####) and compiler warning is reported
 dotnet build PublishTool.slnx -c Debug --no-incremental
 
-# Run the dev binary
+# Tests
+dotnet test PublishTool.Tests
+
+# Run the dev binaries
 PublishTool\bin\Debug\net11.0\PublishTool-dev.exe --help
 PublishTool\bin\Debug\net11.0\PublishTool-dev.exe publish -dir C:\path\to\repo
-PublishTool\bin\Debug\net11.0\PublishTool-dev.exe config -dir C:\path\to\repo
 PublishTool\bin\Debug\net11.0\PublishTool-dev.exe deploy --dry-run -dir C:\path\to\deploy\uat_2026-01-01_12-00-00
+PublishToolCli\bin\Debug\net11.0\PublishToolCli-dev.exe --help
+PublishToolCli\bin\Debug\net11.0\PublishToolCli-dev.exe publish -dir C:\path\to\repo --projects Web,Api --json
+PublishToolCli\bin\Debug\net11.0\PublishToolCli-dev.exe deploy -dir C:\path\to\deploy\uat_2026-01-01_12-00-00
 
-# Native AOT publish like CI does (needs the VC++ toolchain on Windows)
-dotnet publish PublishTool/PublishTool.csproj -c Release -r win-x64 --self-contained -p:PublishAot=true -p:BuildVersion=1.2.3 -o artifacts/win-x64
+# Native AOT publish like CI does (needs the VC++ toolchain on Windows); AOT/trim warnings only show up here
+dotnet publish PublishTool/PublishTool.csproj -c Release -r win-x64 --self-contained -p:PublishAot=true -p:BuildVersion=1.2.3 -o artifacts/win-x64/PublishTool
+dotnet publish PublishToolCli/PublishToolCli.csproj -c Release -r win-x64 --self-contained -p:PublishAot=true -p:BuildVersion=1.2.3 -o artifacts/win-x64/PublishToolCli
 
-# Inspect what the source generators emitted (EmitCompilerGeneratedFiles is on)
-Get-ChildItem PublishTool/obj/generated -Recurse -Filter *.g.cs
+# Inspect what the source generators emitted (EmitCompilerGeneratedFiles is on in both exes)
+Get-ChildItem PublishTool/obj/generated, PublishToolCli/obj/generated -Recurse -Filter *.g.cs
 ```
 
 `dotnet build` of the solution also rebuilds the generator; if generated code looks stale, delete
-`PublishTool/obj` and build again.
+`PublishTool/obj` and `PublishToolCli/obj` and build again.
 
 ### Releasing
 
 Releases are cut manually with the **Release** GitHub Actions workflow (`workflow_dispatch`). It derives the
-next version from Conventional Commits since the last tag (or takes an explicit bump/version), builds Native
-AOT binaries for win-x64/arm64, linux-x64/arm64, osx-x64/arm64, packages them as
-`PublishTool-v<version>-<rid>.zip|tar.gz` (+ `.sha256`), tags `v<version>` and creates the GitHub release.
-The `update` command downloads exactly these asset names, so keep the naming in `release.yml`,
-`ReleaseVersion.GetDownloadUrl` and `EnvironmentHelper` in sync. Use Conventional Commit messages
-(`feat:`, `fix:`, `feat!:`/`BREAKING CHANGE`) so `auto` bump works.
+next version from Conventional Commits since the last tag (or takes an explicit bump/version), builds both
+executables with Native AOT for win-x64/arm64, linux-x64/arm64, osx-x64/arm64, packages them, tags `v<version>`
+and creates one GitHub release with all assets (+ `SHA256SUMS.txt`):
+
+- TUI: `PublishTool-v<version>-<rid>.zip|tar.gz`
+- CLI: `PublishToolCli-<rid>-v<version>.zip|tar.gz`
+
+The CLI name puts the RID before the tag on purpose: PublishTool versions released before the CLI pick the first
+asset whose name ends in `<os>-<arch>.<ext>` and fall back to the only non-LICENSE file in it, so a CLI asset ending
+that way could replace their `PublishTool.exe` with the CLI. Current versions match their exact asset name
+(`SelfUpdate.Tui` / `SelfUpdate.Cli`) and look for exactly their own executable in the archive. Keep the naming in
+`release.yml` and `SelfUpdate` in sync. Use Conventional Commit messages (`feat:`, `fix:`, `feat!:`/`BREAKING CHANGE`)
+so `auto` bump works.
 
 ## Architecture notes and conventions
 
 - Always add newly created files to git (git add)
-- **Native AOT**: no reflection-based serialization or dynamic code. JSON goes through `JsonContext`
-  (source generated), command parsing is source generated, regexes use `[GeneratedRegex]`. Keep it that way.
-- **Adding a command**: create `Commands/FooCommand.cs` with `[Command("foo", Description = "...")]`
-  implementing `ICommand<FooCommandOptions>`, and `Commands/Options/FooCommandOptions.cs` with `[Option]`
-  properties. Supported option types are `bool` (flag), `string`, `int` (also nullable), or any type via
-  `Parser = nameof(StaticMethod)` with signature `static bool M(string value, TOptions options, out string? error)`.
-  `-h/--help` is reserved and added to every command. `IsDefault = true` marks the command that runs when
-  none is given (currently `publish`). The generator emits compile errors PT0001-PT0008 for mistakes.
-- **UI model**: commands with `UsesAlternateScreen => true` run inside Spectre's alternate screen and wait
-  for a key press at the end. The commands do not use Spectre live widgets; `JobDisplayRunner` redraws a
-  `JobDisplay` every 100 ms while the work task runs. Long-running work runs in `Task.Run` and reports progress
-  with `JobRow.AppendLine`; a row's `Name` can be changed while it runs to show the current phase. `deploy` and
-  `rollback` set `UsesAlternateScreen => !Options.Yes`: with `-y` they print to the normal console, render the
-  display once at the end and do not wait for a key, so they can run from scripts.
-- **Going back in prompts**: Spectre prompts have no back key, so a prompt that should support it is shown on
+- **Native AOT**: no reflection-based serialization or dynamic code. JSON goes through `JsonContext` (core) and
+  `CliJsonContext` (CLI results), command parsing is source generated, regexes use `[GeneratedRegex]`. The core has
+  `IsAotCompatible`, so trim/AOT analyzers run on it; run the AOT publish of both exes after touching it.
+- **Where code goes**: anything that is not presentation lives in `PublishTool.Core` and never prompts or writes to
+  the console. Choices (projects, configuration, target mappings, accepting warnings) are parameters or return
+  values of the core; the TUI fills them from prompts and wizards, the CLI from options and stored settings.
+  Executable names in core messages are passed in (`DeployRunner` takes the name used in "run '<exe> rollback'").
+- **Progress seam**: long-running core work (`PublishWorkflow`, `DeployRunner`, `RollbackRunner`) creates its steps
+  up front from an `IStepList` and reports through `IStep` (`Start`, `AppendLine`, `Name` may change while running,
+  `Finish(StepState, detail)`). The TUI passes a `JobDisplay` and redraws it with `JobDisplayRunner`; the CLI passes
+  `LineSteps`, which prints `[start] <step>` and `[done|failed|skipped|cancelled] <step>: <detail> (<seconds>s)` and
+  shows a failed step's error lines (or last lines); `--verbose` prints every line.
+- **Adding a command**: create `Commands/FooCommand.cs` in the executable with `[Command("foo", Description = "...")]`
+  implementing `ICommand<FooCommandOptions>` (from the core), and `Commands/Options/FooCommandOptions.cs` with
+  `[Option]` properties. Supported option types are `bool` (flag), `string`, `int` (also nullable), or any type via
+  `Parser = nameof(StaticMethod)` with signature `static bool M(string value, TOptions options, out string? error)`
+  (a parser may add to a collection, which makes the option repeatable, e.g. `--target`). Only properties declared on
+  the options class itself are seen, so shared options like `--json` are declared per class. `-h/--help` is reserved
+  and added to every command. `IsDefault = true` marks the command that runs when none is given (`publish` in the
+  TUI; the CLI has none and prints help with exit 2). The generator emits compile errors PT0001-PT0008 for mistakes.
+- **One generator, two executables**: the generator reads `build_property.RootNamespace` (each exe has
+  `<CompilerVisibleProperty Include="RootNamespace"/>`) and uses it as the application name in help, for the help
+  command type `<RootNamespace>.Commands.HelpCommand` and for the generated namespace `<RootNamespace>.Generated`.
+  The attribute, `ICommand` and `Result` type names it emits are fixed (`PublishTool.*` in the core).
+- **TUI UI model**: commands implementing `IAlternateScreenCommand` with `UsesAlternateScreen => true` (publish,
+  config, deploy, rollback) run inside Spectre's alternate screen and wait for a key press at the end. The commands do
+  not use Spectre live widgets; `JobDisplayRunner` redraws a `JobDisplay` every 100 ms while the work task runs. The TUI
+  is interactive only: `publish -a`, `deploy -y` and `rollback -y` were removed, and `RemovedSwitches` prints a pointer
+  to PublishToolCli (exit 1) when someone still passes them.
+- **CLI output contract**: every command builds a `CliResult` subtype and runs its body through
+  `CliOutput.RunAsync`, which maps exceptions to exit codes (`CliArgumentException`/`ConfigException` -> 2,
+  `DeployException` -> 1, cancellation -> 130), sets `status`/`exitCode` and, with `--json`, prints exactly one JSON
+  object on stdout (a command line that cannot be parsed still prints a minimal result from `Program.cs` when
+  `--json` is among the arguments). A success code is never turned into 130 afterwards: commands return 130 themselves
+  when they were cancelled. Text mode writes progress and results to stdout and `error: ...` lines to stderr; `--json` moves
+  every progress line to stderr, and the log-file notice of `Logger.Write` always goes to stderr. The JSON carries
+  `schemaVersion` (`CliResult.CurrentSchemaVersion`, independent of the tool version): within one schema version
+  changes are additive only; renaming or removing a field means a new schema version.
+- **CLI exit codes** (`ExitCodes`): 0 success (a dry run whose package and plan are valid exits 0 whatever warnings
+  it lists; verification or plan errors are 1, missing targets 2), 1 failed, 2 invalid arguments or missing
+  configuration, 3 stopped on warnings not accepted with `--accept`, 4 a deploy failed and its automatic restore failed
+  too (journal `RestoreFailed`, run `rollback`), 130 cancelled. Missing administrator rights for `--yes` is exit 1.
+  The TUI keeps 0/1.
+- **Warning codes** (`WarningCodes`): `tool-version`, `target-missing`, `already-deployed`, `full-publish`,
+  `unknown-base`, `no-record`, `chain-mismatch` (deploy), `newer-deploy` (rollback), `downgrade` (CLI update). They are
+  part of the CLI's public contract: never rename one, and give a new check a new code so existing scripts never
+  accept it by accident.
+- **Going back in prompts** (TUI): Spectre prompts have no back key, so a prompt that should support it is shown on
   a `BackKeyConsole` wrapping `AnsiConsole.Console`; its input throws `BackRequestedException` on Esc or
   Left arrow (see `PublishCommand.PromptConfiguration`). Spectre does not clean up a prompt stopped this way
   (its lines stay and the cursor stays hidden), so the catch calls `AnsiConsole.Clear()` and
@@ -160,49 +230,59 @@ The `update` command downloads exactly these asset names, so keep the naming in 
   multi-selection, text input).
 - **Cancellation**: Ctrl+C cancels the shared `CancellationTokenSource`; MSBuild processes are killed with
   their process tree. Every loop over files must call `ct.ThrowIfCancellationRequested()`. Cleanup of temp
-  directories happens in `finally` blocks in `PublishCommand.PrepareDeploy`. While a `CriticalSection` is
-  entered (deploy from stopping the hosts to the end of a restore, the whole rollback run), `Program.cs` swallows
-  every further Ctrl+C instead of letting the second one kill the process; the first one still cancels the
+  directories happens in `finally` blocks in `PublishWorkflow.PrepareDeploy`. While a `CriticalSection` is
+  entered (deploy from stopping the hosts to the end of a restore, the whole rollback run), both `Program.cs` files
+  swallow every further Ctrl+C instead of letting the second one kill the process; the first one still cancels the
   token, which a deploy treats as a failure and rolls back.
 - **Errors**: user-facing messages are short; full exceptions go to `Logger.LogError`. The log is written to
-  `%APPDATA%\PublishTool\Logs\yyyy-MM-dd.log` only if something was logged, and the path is printed.
+  `%APPDATA%\PublishTool\Logs\yyyy-MM-dd.log` only if something was logged, and the path is printed (stdout in the
+  TUI, stderr in the CLI).
 - **Process output**: use `ProcessHelper.RunAsync`; it streams stdout/stderr lines to a callback and returns
   exit code plus captured output.
-- **Config**: `%APPDATA%\PublishTool\config.json`: `Version` plus `Directories`, a map from the absolute
-  working directory to its `DirectorySettings` (`PublishDirectory`, `SharedDirectory`, `DeployDirectory`,
-  `IgnoredDirectories`, `PublishableProjects`). A setting that is `null`/absent was never asked for;
-  `ConfigHandler.Load(workingDir)` runs the wizard for it, saves, and returns the directory's
-  `DirectorySettings`. `DirectorySettings.IsComplete` (annotated with `MemberNotNullWhen`) tells consumers
-  everything is set; `ProjectScanner.Scan` takes the `DirectorySettings?` directly. Adding a new per-directory
-  setting means adding a nullable property to `DirectorySettings`, including it in `IsComplete`, and prompting
-  for it in `ConfigHandler.RunWizard`. That is **not** a new format version.
+- **Config**: `%APPDATA%\PublishTool\config.json`, shared by both executables: `Version` plus `Directories`, a map
+  from the absolute working directory to its `DirectorySettings` (`PublishDirectory`, `SharedDirectory`,
+  `DeployDirectory`, `IgnoredDirectories`, `PublishableProjects`). A setting that is `null`/absent was never set.
+  The TUI's `ConfigHandler.Load(workingDir)` runs the wizard for it, saves, and returns the directory's
+  `DirectorySettings`. The CLI never runs a wizard: `publish` merges per-run options over the stored settings with
+  `DirectorySettings.With(SettingsOverrides)` (never saved) and fails with exit 2 naming the missing keys from
+  `MissingFor` (`publish-dir` always, `shared-dir`/`deploy-dir` unless `--local`, `publishable` unless `--projects`;
+  `ignore` defaults to `.git, .claude`). Only `PublishToolCli config` (or the TUI wizard) changes the file. The CLI
+  option names equal `SettingKeys`. `DirectorySettings.IsComplete` (annotated with `MemberNotNullWhen`) tells TUI
+  consumers everything is set; `ProjectScanner.Scan` takes the `DirectorySettings?` directly. Adding a new
+  per-directory setting means adding a nullable property to `DirectorySettings`, including it in `IsComplete`,
+  `With`, `MissingFor` (if required), `SettingKeys`, prompting for it in `ConfigHandler.RunWizard` and adding the
+  CLI options to `publish` and `config`. That is **not** a new format version.
 - **Server config**: `%ProgramData%\PublishTool\server.json` (machine-wide, written by elevated deploys),
   model `ServerConfig`, own registry `ServerConfigVersions` and store `ConfigStore.Server`, same versioning
   machinery and recipe as `config.json` but its own version number. `Environments` maps a package prefix to
   `Targets` (project name -> `Path`, optional `ServiceName`; no service name means an IIS app); `Deployed`
   maps an absolute target path to the last package deployed there. Lookups are case-insensitive
-  (`ServerConfig.FindKey`). Missing targets are asked for by `ServerConfigHandler.ResolveTargets`, which only
-  accepts an absolute path and a service name that exists on the machine (the check is passed in, so the
-  handler stays platform-neutral); there is no editing wizard yet, so a wrong path is fixed in the file.
+  (`ServerConfig.FindKey`). `DeployTargets.Resolve` merges per-run `TargetOverride`s (CLI `--target`/`--service`)
+  over the stored targets into new objects and reports projects without a path; it never adds an environment or a
+  target to the config, so a deploy with overrides only writes its `Deployed` records and journal. Missing targets
+  are asked for by the TUI's `ServerConfigHandler.ResolveTargets` (absolute path, service must exist on the machine)
+  and stored; the CLI fails with exit 2 instead. `PublishToolCli config --prefix <p>` shows, sets, changes and removes
+  targets (`--target`, `--service`, `--remove-target`); writing `server.json` usually needs an elevated terminal.
 - **Config format versions**: the file carries `Version` (files without it are version 1). `ConfigStore`
   reads the version, parses with that version's `ConfigParser`, runs the `ConfigMigrator` chain step by step
   to `ConfigVersions.Current`, then backs the old file up as `config.v<N>.json.bak` and saves the upgraded
-  one. A file newer than the tool is rejected with a `ConfigException` (shown in red by `Program.cs`); there
-  is no downgrade. Bump the version only when the old model can no longer read the file (renamed/reshaped
-  properties). Version 2 is the worked example: version 1 stored five parallel dictionaries
-  (`Versions/ConfigV1.cs`), `Migrations/ConfigV1ToV2.cs` merges them per directory and leaves settings a
-  directory never had as `null`. The store validates at startup that every version has a parser and every
-  step a migrator, so registry mistakes fail on the first run. Recipe for a new version N:
+  one. A file newer than the tool is rejected with a `ConfigException` (shown in red by the TUI, exit 2 in the CLI);
+  there is no downgrade. Both executables share one version number, so a matching pair always agrees on the format.
+  Bump the version only when the old model can no longer read the file (renamed/reshaped properties). Version 2 is
+  the worked example: version 1 stored five parallel dictionaries (`Versions/ConfigV1.cs`), `Migrations/ConfigV1ToV2.cs`
+  merges them per directory and leaves settings a directory never had as `null`. The store validates at startup that
+  every version has a parser and every step a migrator, so registry mistakes fail on the first run. Recipe for a new
+  version N:
   1. Copy the current `Config` (and `DirectorySettings`) to `Versions/ConfigV<N-1>.cs` as a frozen snapshot:
      plain classes, no `IVersionedConfig`, `Version` as a plain int, no helpers.
-  2. Change `Config` to the new shape, set `ConfigVersions.Current = N`, fix the wizard and the consumers.
+  2. Change `Config` to the new shape, set `ConfigVersions.Current = N`, fix the wizard, the CLI and the consumers.
   3. Register the snapshot in `JsonContext`, add `new ConfigParser<ConfigV<N-1>>(N-1, JsonContext.Default.ConfigV<N-1>)`
      to `ConfigVersions.Parsers`, and change the current model's parser entry to version N.
   4. Add `Migrations/ConfigV<N-1>ToV<N>.cs` deriving from `ConfigMigrator<ConfigV<N-1>, Config>` and add it to
      `ConfigVersions.Migrators`. Older migrators keep targeting their snapshot (`ConfigMigrator<ConfigV1, ConfigV2>`
      once version 3 exists), so migration always runs one step at a time.
-  5. Verify with a throwaway console project that includes `Configuration/**/*.cs` (minus `ConfigHandler.cs`)
-     and feeds a real old file through a `ConfigStore<Config>` pointed at a sandbox path.
+  5. Add a test to `PublishTool.Tests/Configuration/ConfigStoreTests.cs` that feeds a real old file through a
+     `ConfigStore<Config>` pointed at a temp path.
 - **Project kinds** (`ProjectScanner.DetectKind`): SDK-style projects are published with
   `/t:Publish /p:RuntimeIdentifier=win-x64 /p:SelfContained=false`; legacy web projects
   (`Microsoft.WebApplication.targets`) use `DeployOnBuild` + `WebPublishMethod=FileSystem`; other legacy
@@ -210,6 +290,9 @@ The `update` command downloads exactly these asset names, so keep the naming in 
   `/p:BuildProjectReferences=false`. `<publish dir>\<Project>` is deleted before each publish, because
   `dotnet publish` never removes stale files and deleted files would otherwise never show up as deletions.
   SDK projects embed the git commit in their assemblies, so their dll/exe/pdb change with every commit.
+  The TUI offers the publishable projects of the directory config; the CLI publishes them by default, or the
+  projects named with `--projects`, looked up by exact name (case-insensitive) among all projects in the directory
+  (`ProjectScanner.SelectByName` rejects unknown and ambiguous names).
 - **Code style**: `.editorconfig` at the root, file-scoped namespaces, primary constructors, collection
   expressions, `Lock` type, C# 14 `extension` blocks (see `StringExtensions`). Nullable is enabled and the
   build should stay warning-free. All text files use LF line endings, in the repository and in the working
@@ -223,21 +306,19 @@ The `update` command downloads exactly these asset names, so keep the naming in 
 - **Static analysis**: `SonarAnalyzer.CSharp` (the same rules SonarQube for IDE shows in Rider) is referenced from
   `Directory.Build.props` and runs on every build, so Sonar findings appear as `S####` compiler warnings.
   **Before finishing any work, run the full analysis build from the commands above and make sure it reports
-  0 warnings.** Fix findings rather than silencing them. For a real false positive, suppress as narrowly as
-  possible (`[SuppressMessage]` with a `Justification` on the member, see `Emitter.cs`); a rule that does not
-  fit this project at all is disabled in the Sonar section of `.editorconfig` with a comment saying why.
-- **Known gap**: `update -v/--version` is parsed but `UpdateCommand` never uses `Options.Version`
-  (it always installs the latest full or pre-release version).
+  0 warnings, and run the tests.** Fix findings rather than silencing them. For a real false positive, suppress as
+  narrowly as possible (`[SuppressMessage]` with a `Justification` on the member, see `Emitter.cs`); a rule that does
+  not fit this project at all is disabled in the Sonar section of `.editorconfig` with a comment saying why.
 
 ## The deploy workflow (DeployPreparer)
 
-Runs after every publish unless `-l/--local` is given (the flag replaced the old opt-in `-c/--complete`).
+Runs after every publish unless `-l/--local` is given, the same way in both executables (`PublishWorkflow`).
 
 Naming: `<prefix>_<yyyy-MM-dd_HH-mm-ss>` where prefix is the sanitized current git branch (`DEPLOY` if
 not in a git repo). The shared directory contains **only zip files** named `<name>.zip`, project
 directories at the archive root (`Web/...`, `Api/...`), created with `CompressionLevel.Fastest`.
 
-Steps, each its own row in the UI (five deploy rows in total):
+Steps, each its own step in the UI (five deploy steps in total):
 
 1. **Download**: `FindPreviousReference(prefix)` picks the newest `<prefix>_*.zip`. It is copied to
    `<deploy dir>\<name>.tmp\previous.zip` and extracted to `<deploy dir>\<name>.tmp\previous\`. If a
@@ -261,9 +342,12 @@ Steps, each its own row in the UI (five deploy rows in total):
    has a manifest and `deploy` refuses it. The `.tmp` work directory is deleted; on failure or cancel the
    partial upload and the deploy directory are deleted as well.
 5. **Prune**: after the new zip is in place, all but the newest `KeepReferences` (3, constant in
-   `PublishCommand`) archives of the same prefix are deleted from the share. Only `.zip` files whose name
+   `PublishWorkflow`) archives of the same prefix are deleted from the share. Only `.zip` files whose name
    parses as `<prefix>_<timestamp>` are touched; old-workflow directories, other branches and `.uploading`
    leftovers are ignored. A failed delete is logged and shown but does not fail the publish.
+
+The result (`PublishResult`: package name and directory, new and previous reference, per-project change counts,
+carried projects, pruned archives) is what the CLI prints and puts into its JSON.
 
 Design intent: the shared directory is on a slow remote server, so it must only ever see whole-file
 copies of one zip (no per-file IO, no remote extraction). All heavy work happens on the local machine.
@@ -284,23 +368,30 @@ Get-ChildItem $shared -Directory | Where-Object { $_.Name -match '_\d{4}-\d{2}-\
 
 ## The server deploy (deploy / rollback)
 
-Windows only (other platforms exit 1 at once); both need administrator rights, except `deploy --dry-run`.
+Windows only (other platforms exit 1 at once). Changing the server needs administrator rights; a dry run does not.
 Everything is driven by the manifest: a directory or file not listed there is never deployed (extra files are
 shown in the summary), and every manifest path goes through `PackagePaths.Resolve`, which rejects paths
 outside the package or target.
 
-`deploy -dir <package>` preflight, nothing changes on the server: admin check, refuse if `<package>\.backup`
-exists (deployed before or interrupted, run `rollback` first), load the manifest (missing or newer format is
-refused), verify every file's size and SHA-256, resolve the targets of the manifest's prefix (wizard for missing
-ones), build the `DeployPlan`. Errors stop it: two projects mapped to one path, a missing service, IIS targets
-without IIS. Warnings need the user's acceptance (default no): the package was made by another PublishTool
-version (exact string match with `BuildInfo.Version`), a target directory does not exist, and the chain check
-per target: the target's `Deployed` record must equal the project's `Base`; an unknown base, a missing record,
-a mismatch (skipped or out-of-order package), the package already deployed there, or a full publish onto a
-deployed target all warn. `-y` skips only the final confirmation and stops with exit 1 on any warning or
-missing mapping; `--dry-run` stops after the summary.
+`deploy -dir <package>` preflight, nothing changes on the server: admin check (unless a dry run), refuse if
+`<package>\.backup` exists (deployed before or interrupted, run `rollback` first; not checked in a dry run), load the
+manifest (missing or newer format is refused), verify every file's size and SHA-256, resolve the targets of the
+manifest's prefix, build the `DeployPlan`. Errors stop it: two projects mapped to one path, a missing service, IIS
+targets without IIS. Warnings carry codes (see `WarningCodes`): the package was made by another PublishTool version
+(exact string match with `BuildInfo.Version`, `tool-version`), a target directory does not exist (`target-missing`),
+and the chain check per target: the target's `Deployed` record must equal the project's `Base`; an unknown base
+(`unknown-base`), a missing record (`no-record`), a mismatch, i.e. a skipped or out-of-order package
+(`chain-mismatch`), the package already deployed there (`already-deployed`), or a full publish onto a deployed target
+(`full-publish`) all warn.
 
-`DeployRunner` rows: backup (overwritten and deleted files into `<package>\.backup\<Project>\...`, journal
+- **TUI** (`PublishTool deploy`): asks for missing targets in a wizard and stores them, shows the summary, asks to
+  accept warnings (default no) or to confirm; `--dry-run` stops after the summary.
+- **CLI** (`PublishToolCli deploy`): without `--yes` (or with `--dry-run`) it is a dry run: verify, print the plan and
+  the warnings (with `accepted` flags), exit 0. Missing targets are exit 2 (pass `--target <project>=<path>` and
+  `--service <project>=<name>` for this run, or store them with `config --prefix`). With `--yes`: an empty plan exits
+  0, any warning whose code is not in `--accept` stops with exit 3 before anything changes, otherwise it runs.
+
+`DeployRunner` steps: backup (overwritten and deleted files into `<package>\.backup\<Project>\...`, journal
 `journal.json` written before and after, state `BackingUp`), stop (journal state `Applying` with the hosts that
 were running and will be started again; services first, then `iisreset /stop` if any target has no service
 name), apply (copy, delete, remove directories the deletions left empty), start (`iisreset /start`, then the
@@ -310,50 +401,72 @@ created files and empty created directories; idempotent, so it does not need to 
 resets the records if they were written, starts the hosts again and removes the backup. Before restoring after
 the apply started, it stops the hosts again (a failed start may have started some of them, and running apps
 lock their files); if the failure came before apply, nothing was changed, so it skips the restore. If the
-restore itself fails, the journal becomes `RestoreFailed`, the backup stays and the user runs `rollback`. A
-failed or cancelled backup removes only a backup this run created.
+restore itself fails, the journal becomes `RestoreFailed`, the backup stays, the outcome is
+`DeployOutcome.RestoreFailed` (CLI exit 4) and the user runs `rollback`. A failed or cancelled backup removes only a
+backup this run created.
 
 `rollback -dir <package>` reads the journal: `BackingUp` means nothing on the server changed, so it only removes
-the backup. Otherwise it warns when a target's record is not this package (a newer deploy happened; skipped for
-`Applying`, an interrupted deploy, and `RestoreFailed`), stops the running hosts, restores, starts what it
-stopped plus, for `Applying` and `RestoreFailed`, what the deploy had stopped, resets the records to the
-journal's previous ones and deletes the backup. Backups are otherwise never pruned; deleting a package directory deletes its backup.
+the backup (the CLI only with `--yes`). Otherwise it warns (`newer-deploy`) when a target's record is not this
+package (a newer deploy happened; skipped for `Applying`, an interrupted deploy, and `RestoreFailed`), stops the
+running hosts, restores, starts what it stopped plus, for `Applying` and `RestoreFailed`, what the deploy had
+stopped, resets the records to the journal's previous ones and deletes the backup. The TUI asks for confirmation;
+the CLI is a dry run without `--yes` and stops with exit 3 on a warning not accepted with `--accept newer-deploy`.
+Backups are otherwise never pruned; deleting a package directory deletes its backup.
 
 ## Usage guide (end user)
 
 ```
-PublishTool [command] [options]
-
-  publish  (default)  -dir <path>  -a  -l|--local
-  deploy              -dir <package dir>  -y|--yes  --dry-run   (server, elevated)
-  rollback            -dir <package dir>  -y|--yes              (server, elevated)
+PublishTool [command] [options]             interactive TUI
+  publish  (default)  -dir <path>  -l|--local
+  deploy              -dir <package dir>  --dry-run                       (server, elevated)
+  rollback            -dir <package dir>                                  (server, elevated)
   config              -dir <path>
-  update              -pre|--pre-release  --fetch  (-v|--version <version>: currently ignored)
+  update              -pre|--pre-release  --fetch  -v|--version <version>
   version
   -h, --help          on every command
+
+PublishToolCli <command> [options]           non-interactive CLI, never prompts
+  publish   -dir <path>  -p|--projects <a,b>  -c|--configuration Release|Debug  -l|--local
+            --publish-dir <path>  --shared-dir <path>  --deploy-dir <path>  --ignore <dirs>  --json  --verbose
+  deploy    -dir <package dir>  -y|--yes  --dry-run  --accept <codes>
+            --target <project=path>...  --service <project=name>...  --json  --verbose    (server; --yes needs elevation)
+  rollback  -dir <package dir>  -y|--yes  --accept newer-deploy  --json  --verbose   (server; --yes needs elevation)
+  config    -dir <path>  [--publish-dir|--shared-dir|--deploy-dir <path>]  [--ignore|--publishable <list>]
+            [--unset <keys>]  --json
+  config    --prefix <prefix>  [--target <project=path>]...  [--service <project=name>]...
+            [--remove-target <project>]...  --json
+  update    -pre|--pre-release  --fetch  -v|--version <version>  --accept downgrade  --json
+  version   --json
+  -h, --help  on every command; PublishToolCli --help also lists the exit and warning codes
 ```
 
 1. **First run in a repository**: `PublishTool -dir C:\repo` (or run it from the repo). The wizard asks for
    the publish directory (local output, one subdirectory per project), the shared directory (network share
    holding the reference zips), the deploy directory (local, receives `<name>` change sets), directories to
    ignore while scanning (default `.git, .claude`), and which projects are publishable. Re-run the wizard
-   with `PublishTool config -dir C:\repo`.
+   with `PublishTool config -dir C:\repo`. Without the TUI: `PublishToolCli config -dir C:\repo --publish-dir ...
+   --shared-dir ... --deploy-dir ... --publishable Web,Api`.
 2. **Publish**: `PublishTool publish` prompts for projects and configuration (Release/Debug). Pressing Esc or
    Left arrow in the configuration prompt reopens the project prompt with the previous selection preselected.
-   Then it shows the build row, one row per project and the five deploy rows. `-a` publishes all publishable projects in
-   Release without prompts. `-l/--local` only publishes locally and skips the deploy rows. Exit code 0 on
-   success, 1 on any failure.
+   Then it shows the build row, one row per project and the five deploy rows. `-l/--local` only publishes locally
+   and skips the deploy rows. Unattended: `PublishToolCli publish -dir C:\repo` publishes every publishable project
+   in Release (`--projects`, `--configuration` and the directory options override), prints one line per step and the
+   package path, or with `--json` one result object (`packageName`, `packageDirectory`, `changes`, ...). Exit code 0
+   on success.
 3. **Deploy**: after a publish without `--local`, copy `<deploy dir>\<branch>_<timestamp>` to the server; it
    contains only the files that differ from the previous publish of the same branch plus the manifest. On the
    server, in an elevated terminal, run `PublishTool deploy -dir <package>`. The first package of a prefix asks
    for each project's target directory and Windows service name (empty for IIS apps), stored in
    `%ProgramData%\PublishTool\server.json`. Review the summary and warnings, confirm, and watch the rows.
-   Deploy packages of a branch in order; the tool warns when one was skipped. Config files are deployed like
-   any other file, so the app itself must ship correct per-environment configs. Keep the package directory:
-   it holds the backup. `PublishTool rollback -dir <package>` undoes the deploy.
-4. **Update the tool**: `PublishTool update` (or `update --fetch` to only check). Dev builds cannot update.
-   The previous executable is kept as `PublishTool.exe.old` and removed on the next start. Without `-pre` the
-   target is the newest GitHub release not marked as a pre-release; with `-pre` it is the newest release of
-   any kind, so a full release wins over older pre-releases. Users running a pre-release are asked whether to
-   include pre-releases. If the installed version is newer than the target (a pre-release ahead of the latest
-   full release), `--fetch` prints a downgrade warning and `update` asks before downgrading (default no).
+   Unattended: `PublishToolCli deploy -dir <package>` (dry run, review the warnings), then
+   `PublishToolCli deploy -dir <package> --yes --accept <codes you reviewed>`. Deploy packages of a branch in order;
+   the tool warns when one was skipped. Config files are deployed like any other file, so the app itself must ship
+   correct per-environment configs. Keep the package directory: it holds the backup. `rollback -dir <package>`
+   (with `--yes` in the CLI) undoes the deploy.
+4. **Update the tool**: `PublishTool update` / `PublishToolCli update` (or `update --fetch` to only check); each
+   replaces only its own executable. Dev builds cannot update. The previous executable is kept as `<exe>.old` and
+   removed on the next start. Without `-pre` the target is the newest GitHub release not marked as a pre-release;
+   with `-pre` it is the newest release of any kind, so a full release wins over older pre-releases; `-v <version>`
+   installs exactly that release, older or not. The TUI asks users on a pre-release whether to include
+   pre-releases and asks before a downgrade (default no); the CLI never asks and stops a downgrade with exit 3
+   unless `--accept downgrade` is given.

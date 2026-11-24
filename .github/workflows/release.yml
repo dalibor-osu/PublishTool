@@ -39,6 +39,8 @@ env:
   DOTNET_VERSION: "11.0.x"
   PROJECT: PublishTool/PublishTool.csproj
   APP_NAME: PublishTool
+  CLI_PROJECT: PublishToolCli/PublishToolCli.csproj
+  CLI_APP_NAME: PublishToolCli
   DOTNET_NOLOGO: "true"
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
 
@@ -197,44 +199,61 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dotnet publish "$PROJECT" \
-            --configuration Release \
-            --runtime ${{ matrix.rid }} \
-            --self-contained true \
-            -p:PublishAot=true \
-            -p:BuildVersion=${{ needs.version.outputs.version }} \
-            --output "artifacts/${{ matrix.rid }}"
+          for project in "$PROJECT:$APP_NAME" "$CLI_PROJECT:$CLI_APP_NAME"; do
+            dotnet publish "${project%%:*}" \
+              --configuration Release \
+              --runtime ${{ matrix.rid }} \
+              --self-contained true \
+              -p:PublishAot=true \
+              -p:BuildVersion=${{ needs.version.outputs.version }} \
+              --output "artifacts/${{ matrix.rid }}/${project##*:}"
+          done
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $name = "$env:APP_NAME-${{ needs.version.outputs.tag }}-${{ matrix.rid }}"
-          New-Item -ItemType Directory -Path "package/$name" | Out-Null
+          $tag = '${{ needs.version.outputs.tag }}'
+          $rid = '${{ matrix.rid }}'
           New-Item -ItemType Directory -Path dist | Out-Null
-          Copy-Item "artifacts/${{ matrix.rid }}/$env:APP_NAME.exe" "package/$name/"
-          Copy-Item LICENSE "package/$name/"
-          Compress-Archive -Path "package/$name" -DestinationPath "dist/$name.zip"
-          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Out-File -Encoding ascii "dist/$name.zip.sha256"
+          $packages = @(
+            @{ App = $env:APP_NAME; Name = "$env:APP_NAME-$tag-$rid" },
+            @{ App = $env:CLI_APP_NAME; Name = "$env:CLI_APP_NAME-$rid-$tag" }
+          )
+          foreach ($package in $packages) {
+            $name = $package.Name
+            New-Item -ItemType Directory -Path "package/$name" | Out-Null
+            Copy-Item "artifacts/$rid/$($package.App)/$($package.App).exe" "package/$name/"
+            Copy-Item LICENSE "package/$name/"
+            Compress-Archive -Path "package/$name" -DestinationPath "dist/$name.zip"
+            $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+            "$hash  $name.zip" | Out-File -Encoding ascii "dist/$name.zip.sha256"
+          }
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          name="${APP_NAME}-${{ needs.version.outputs.tag }}-${{ matrix.rid }}"
-          mkdir -p "package/${name}" dist
-          cp "artifacts/${{ matrix.rid }}/${APP_NAME}" "package/${name}/"
-          cp LICENSE "package/${name}/"
-          chmod +x "package/${name}/${APP_NAME}"
-          tar -czf "dist/${name}.tar.gz" -C package "${name}"
-          if command -v sha256sum > /dev/null; then
-            (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
-          else
-            (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
-          fi
+          tag="${{ needs.version.outputs.tag }}"
+          rid="${{ matrix.rid }}"
+          mkdir -p dist
+          package() {
+            local app="$1" name="$2"
+            mkdir -p "package/${name}"
+            cp "artifacts/${rid}/${app}/${app}" "package/${name}/"
+            cp LICENSE "package/${name}/"
+            chmod +x "package/${name}/${app}"
+            tar -czf "dist/${name}.tar.gz" -C package "${name}"
+            if command -v sha256sum > /dev/null; then
+              (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+            else
+              (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+            fi
+          }
+          package "${APP_NAME}" "${APP_NAME}-${tag}-${rid}"
+          package "${CLI_APP_NAME}" "${CLI_APP_NAME}-${rid}-${tag}"
 
       - uses: actions/upload-artifact@v7
         with:

@@ -1,8 +1,5 @@
-using System.Formats.Tar;
-using System.IO.Compression;
 using PublishTool.Attributes;
 using PublishTool.Commands.Options;
-using PublishTool.Extensions;
 using PublishTool.GitHub;
 using PublishTool.Helpers;
 using Spectre.Console;
@@ -12,65 +9,37 @@ namespace PublishTool.Commands;
 [Command("update", Description = "Update PublishTool to the latest published or selected release")]
 public class UpdateCommand(UpdateCommandOptions options) : ICommand<UpdateCommandOptions>
 {
-    private const string ExecutableName = "PublishTool";
-    private const string BackupSuffix = ".old";
-
     public UpdateCommandOptions Options { get; } = options;
-
-    public bool UsesAlternateScreen => false;
-
-    public static void CleanUpBackup()
-    {
-        if (Environment.ProcessPath == null)
-        {
-            return;
-        }
-
-        string backupPath = Environment.ProcessPath + BackupSuffix;
-
-        try
-        {
-            if (File.Exists(backupPath))
-            {
-                File.Delete(backupPath);
-                Logger.LogInfo($"Deleted update backup '{backupPath}'");
-            }
-        }
-        catch (Exception e)
-        {
-            Logger.LogWarning($"Failed to delete update backup '{backupPath}': {e}");
-        }
-    }
-
 
     public async Task<int> ExecuteAsync(CancellationToken ct)
     {
         var client = new GitHubClient();
         var currentVersion = ReleaseVersion.Current;
+        bool exact = !string.IsNullOrWhiteSpace(Options.Version);
 
-        if (currentVersion?.IsPreRelease == true && !Options.PreRelease)
+        if (!exact && currentVersion?.IsPreRelease == true && !Options.PreRelease)
         {
             Options.PreRelease = await AnsiConsole.ConfirmAsync(
                 "You are currently running a pre-release version. Do you want to include pre-release versions?", cancellationToken: ct);
         }
 
-        string channel = Options.PreRelease ? "version (including pre-releases)" : "full version";
-        AnsiConsole.WriteLine($"Fetching latest {channel}...");
-        var result = Options.PreRelease ? await client.GetLatestVersionIncludingPreReleaseAsync(ct) : await client.GetLatestFullVersionAsync(ct);
+        string channel = Channel(exact);
+        AnsiConsole.WriteLine($"Fetching {(exact ? string.Empty : "latest ")}{channel}...");
+        var result = await SelfUpdate.FindAsync(client, Options.PreRelease, Options.Version, ct);
         if (!result.IsSuccess)
         {
-            AnsiConsole.MarkupLine($"[red]Failed to fetch latest {channel}:[/] {Markup.Escape(result.Error)}");
+            AnsiConsole.MarkupLine($"[red]Failed to fetch {Markup.Escape(channel)}:[/] {Markup.Escape(result.Error)}");
             return 1;
         }
 
-        var latestVersion = result.Value;
+        var targetVersion = result.Value;
 
         if (Options.Fetch)
         {
-            AnsiConsole.WriteLine($"Latest {channel}: {latestVersion} (Current: {currentVersion?.ToString() ?? BuildInfo.Version})");
-            if (currentVersion != null && currentVersion > latestVersion)
+            AnsiConsole.WriteLine($"Target {channel}: {targetVersion} (Current: {currentVersion?.ToString() ?? BuildInfo.Version})");
+            if (!exact && currentVersion != null && currentVersion > targetVersion)
             {
-                WriteDowngradeWarning(currentVersion, latestVersion);
+                WriteDowngradeWarning(currentVersion, targetVersion);
             }
 
             return 0;
@@ -82,75 +51,42 @@ public class UpdateCommand(UpdateCommandOptions options) : ICommand<UpdateComman
             return 1;
         }
 
-        int compareResult = currentVersion.CompareTo(latestVersion);
+        int compareResult = currentVersion.CompareTo(targetVersion);
         if (compareResult == 0)
         {
             AnsiConsole.WriteLine("Current version is up to date");
             return 0;
         }
 
-        bool update = true;
-        if (compareResult > 0)
+        if (compareResult > 0 && !exact)
         {
-            WriteDowngradeWarning(currentVersion, latestVersion);
-            update = await AnsiConsole.ConfirmAsync($"Do you want to downgrade to {latestVersion}?", false, ct);
+            WriteDowngradeWarning(currentVersion, targetVersion);
+            if (!await AnsiConsole.ConfirmAsync($"Do you want to downgrade to {targetVersion}?", false, ct))
+            {
+                AnsiConsole.WriteLine("Update cancelled");
+                return 0;
+            }
         }
 
-        if (!update)
+        var install = await SelfUpdate.Tui.InstallAsync(client, targetVersion, AnsiConsole.WriteLine, ct);
+        if (!install.IsSuccess)
         {
-            AnsiConsole.WriteLine("Update cancelled");
-            return 0;
-        }
-
-        string downloadUrl = latestVersion.GetDownloadUrl();
-        if (downloadUrl.IsEmptyOrWhiteSpace)
-        {
-            AnsiConsole.WriteLine("Cannot get download url");
+            AnsiConsole.MarkupLine($"[red]{Markup.Escape(install.Error)}[/]");
             return 1;
         }
 
-        string currentExePath = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot get executable path");
-        string tempDirectory = Path.Combine(Path.GetTempPath(), $"PublishTool-update-{Guid.NewGuid():N}");
+        AnsiConsole.MarkupLine($"[green]Updated to {targetVersion}[/]");
+        return 0;
+    }
 
-        try
+    private string Channel(bool exact)
+    {
+        if (exact)
         {
-            var assetArchiveInfo = await client.DownloadAssetAsync(downloadUrl, tempDirectory, ct);
-            if (!assetArchiveInfo.IsSuccess)
-            {
-                AnsiConsole.WriteLine("Failed to download the new version");
-                return 1;
-            }
-
-            AnsiConsole.WriteLine("Extracting the new version...");
-            string extractDirectory = Path.Combine(tempDirectory, "extracted");
-            var extractResult = ExtractArchive(assetArchiveInfo.Value, extractDirectory);
-            if (!extractResult.IsSuccess)
-            {
-                AnsiConsole.MarkupLine($"[red]Failed to extract the new version:[/] {extractResult.Error}");
-                return 1;
-            }
-
-            var newExecutableResult = FindExecutable(extractDirectory);
-            if (!newExecutableResult.IsSuccess)
-            {
-                AnsiConsole.MarkupLine($"[red]Failed to extract the new version:[/] {newExecutableResult.Error}");
-                return 1;
-            }
-
-            var replaceResult = ReplaceExecutable(newExecutableResult.Value.FullName, currentExePath);
-            if (!replaceResult.IsSuccess)
-            {
-                AnsiConsole.MarkupLine($"[red]Failed to replace the current executable:[/] {replaceResult.Error}");
-                return 1;
-            }
-
-            AnsiConsole.MarkupLine($"[green]Updated to {latestVersion}[/]");
-            return 0;
+            return $"version {Options.Version}";
         }
-        finally
-        {
-            TryDeleteDirectory(tempDirectory);
-        }
+
+        return Options.PreRelease ? "version (including pre-releases)" : "full version";
     }
 
     private void WriteDowngradeWarning(ReleaseVersion currentVersion, ReleaseVersion latestVersion)
@@ -162,127 +98,5 @@ public class UpdateCommand(UpdateCommandOptions options) : ICommand<UpdateComman
                 + $"Updating will downgrade PublishTool to {latestVersion}.";
 
         AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(message)}[/]");
-    }
-
-    private static Result<bool> ExtractArchive(FileInfo archive, string targetDirectory)
-    {
-        try
-        {
-            Directory.CreateDirectory(targetDirectory);
-
-            if (archive.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-            {
-                ZipFile.ExtractToDirectory(archive.FullName, targetDirectory, true);
-                return true;
-            }
-
-            if (archive.Name.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
-            {
-                using var archiveStream = archive.OpenRead();
-                using var decompressed = new GZipStream(archiveStream, CompressionMode.Decompress);
-                TarFile.ExtractToDirectory(decompressed, targetDirectory, true);
-                return true;
-            }
-
-            return $"Unsupported archive format '{archive.Name}'";
-        }
-        catch (Exception e)
-        {
-            Logger.LogError(e.ToString());
-            return "An error occurred while extracting the archive";
-        }
-    }
-
-    private static Result<FileInfo> FindExecutable(string extractDirectory)
-    {
-        string executableName = ExecutableName + (OperatingSystem.IsWindows() ? ".exe" : string.Empty);
-
-        string? executable = Directory
-            .EnumerateFiles(extractDirectory, executableName, SearchOption.AllDirectories)
-            .FirstOrDefault();
-
-        if (executable != null)
-        {
-            return new FileInfo(executable);
-        }
-
-        var candidates = Directory
-            .EnumerateFiles(extractDirectory, "*", SearchOption.AllDirectories)
-            .Where(f => !Path.GetFileNameWithoutExtension(f).Equals("LICENSE", StringComparison.OrdinalIgnoreCase))
-            .Take(2)
-            .ToList();
-
-        if (candidates.Count != 1)
-        {
-            return $"Could not find '{executableName}' in the downloaded archive";
-        }
-
-        return new FileInfo(candidates[0]);
-    }
-
-    private static Result<bool> ReplaceExecutable(string newExecutablePath, string currentExePath)
-    {
-        string backupPath = currentExePath + BackupSuffix;
-
-        try
-        {
-            if (File.Exists(backupPath))
-            {
-                File.Delete(backupPath);
-            }
-
-            File.Move(currentExePath, backupPath);
-        }
-        catch (Exception e)
-        {
-            Logger.LogError(e.ToString());
-            return $"Could not rename the current executable to '{Path.GetFileName(backupPath)}'";
-        }
-
-        try
-        {
-            File.Move(newExecutablePath, currentExePath);
-        }
-        catch (Exception e)
-        {
-            Logger.LogError(e.ToString());
-
-            try
-            {
-                File.Move(backupPath, currentExePath);
-            }
-            catch (Exception rollbackException)
-            {
-                Logger.LogError(rollbackException.ToString());
-                return $"Could not install the new executable and the previous one is left at '{backupPath}'";
-            }
-
-            return "Could not install the new executable";
-        }
-
-        if (!OperatingSystem.IsWindows())
-        {
-            File.SetUnixFileMode(currentExePath,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
-                UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
-        }
-
-        return true;
-    }
-
-    private static void TryDeleteDirectory(string directory)
-    {
-        try
-        {
-            if (Directory.Exists(directory))
-            {
-                Directory.Delete(directory, true);
-            }
-        }
-        catch (Exception e)
-        {
-            Logger.LogWarning($"Failed to delete '{directory}': {e}");
-        }
     }
 }

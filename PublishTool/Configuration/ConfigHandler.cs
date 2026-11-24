@@ -4,8 +4,6 @@ namespace PublishTool.Configuration;
 
 public static class ConfigHandler
 {
-    private static readonly string[] DefaultIgnoredDirectories = [".git", ".claude"];
-
     public static DirectorySettings Load(string workingDir, bool forceUpdate = false)
     {
         var config = ConfigStore.Default.Load();
@@ -76,7 +74,7 @@ public static class ConfigHandler
         settings.IgnoredDirectories = AnsiConsole
             .Ask(
                 "Enter [green]directories[/] that will be ignored when scanning for projects in this directory (comma separated):",
-                string.Join(", ", settings.IgnoredDirectories ?? DefaultIgnoredDirectories))
+                string.Join(", ", settings.IgnoredDirectories ?? DirectorySettings.DefaultIgnoredDirectories))
             .Split(',')
             .Select(s => s.Trim())
             .ToArray();

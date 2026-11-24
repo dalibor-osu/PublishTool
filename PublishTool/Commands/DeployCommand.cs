@@ -4,6 +4,7 @@ using PublishTool.Commands.Options;
 using PublishTool.Configuration;
 using PublishTool.Console;
 using PublishTool.Deployment;
+using PublishTool.GitHub;
 using PublishTool.Helpers;
 using Spectre.Console;
 
@@ -11,11 +12,11 @@ namespace PublishTool.Commands;
 
 [Command("deploy", Description = "Deploy a package created by publish to the targets mapped on this server (Windows only, needs "
     + "administrator rights)")]
-public class DeployCommand(DeployCommandOptions options) : ICommand<DeployCommandOptions>
+public class DeployCommand(DeployCommandOptions options) : ICommand<DeployCommandOptions>, IAlternateScreenCommand
 {
     public DeployCommandOptions Options { get; } = options;
 
-    public bool UsesAlternateScreen => !Options.Yes;
+    public bool UsesAlternateScreen => true;
 
     public async Task<int> ExecuteAsync(CancellationToken ct)
     {
@@ -73,8 +74,7 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
         var config = store.Load();
         var hosts = new WindowsHostController();
         var mappings = ServerConfigHandler.ResolveTargets(
-            store, config, package.Manifest.Prefix, [.. package.Manifest.Projects.Select(p => p.Name)], interactive: !Options.Yes,
-            hosts.ServiceExists);
+            store, config, package.Manifest.Prefix, [.. package.Manifest.Projects.Select(p => p.Name)], hosts.ServiceExists);
         var plan = DeployPlan.Create(package, mappings, config, hosts, BuildInfo.Version);
         DeploySummary.WritePlan(plan, verification, BuildInfo.Version);
 
@@ -95,17 +95,17 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
             return 0;
         }
 
-        if (!await DeploySummary.AcceptAsync(plan.Warnings, Options.Yes, $"Deploy {package.Manifest.Name}", ct))
+        if (!await DeploySummary.AcceptAsync(plan.Warnings, $"Deploy {package.Manifest.Name}", ct))
         {
             return 1;
         }
 
-        if (UsesAlternateScreen)
-        {
-            AnsiConsole.Clear();
-        }
+        AnsiConsole.Clear();
 
-        var runner = new DeployRunner(plan, config, store, hosts, BuildInfo.Version);
-        return await runner.RunAsync(UsesAlternateScreen, ct) ? 0 : 1;
+        var display = new JobDisplay();
+        var runner = new DeployRunner(plan, config, store, hosts, BuildInfo.Version, SelfUpdate.Tui.AppName, display);
+        var work = runner.RunAsync(ct);
+        await JobDisplayRunner.RunAsync(display, work, live: true);
+        return await work == DeployOutcome.Deployed ? 0 : 1;
     }
 }

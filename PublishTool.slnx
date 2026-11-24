@@ -1,4 +1,7 @@
 <Solution>
+    <Project Path="PublishTool.Core/PublishTool.Core.csproj"/>
     <Project Path="PublishTool/PublishTool.csproj"/>
     <Project Path="PublishTool.Generators/PublishTool.Generators.csproj"/>
+    <Project Path="PublishTool.Tests/PublishTool.Tests.csproj"/>
+    <Project Path="PublishToolCli/PublishToolCli.csproj"/>
 </Solution>

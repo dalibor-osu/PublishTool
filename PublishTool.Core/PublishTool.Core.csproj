@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsAotCompatible>true</IsAotCompatible>
+    <RootNamespace>PublishTool</RootNamespace>
+    <Product>PublishTool</Product>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(BuildVersion)' != ''">
+    <Version>$(BuildVersion)</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="11.0.0"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PublishTool.Tests"/>
+  </ItemGroup>
+
+  <Target Name="GenBuildInfo" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <BuildInfoFile>$(IntermediateOutputPath)BuildInfo.g.cs</BuildInfoFile>
+      <BuildVersion Condition="'$(BuildVersion)' == ''">dev</BuildVersion>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(BuildInfoFile)" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Lines="public static class BuildInfo { public const string Version = &quot;$(BuildVersion)&quot;%3B }"/>
+    <ItemGroup>
+      <Compile Include="$(BuildInfoFile)"/>
+    </ItemGroup>
+  </Target>
+
+</Project>

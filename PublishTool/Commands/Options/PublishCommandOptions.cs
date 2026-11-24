@@ -8,9 +8,6 @@ public class PublishCommandOptions
     [Option("-dir", Parser = nameof(ParseWorkingDirectory), ValueName = "working dir path", Description = "Directory to scan for projects")]
     public string WorkingDirectory { get; set; } = Directory.GetCurrentDirectory();
 
-    [Option("-a", Description = "Publish every project in Release configuration without asking")]
-    public bool All { get; set; } = false;
-
     [Option("-l", "--local", Description = "Only publish into the publish directory and skip the deploy step. Without this flag, "
         + "the publish is compared with the previous one of the current git branch in the shared directory, a directory named after "
         + "the branch and time (e.g. PROD_2026-09-03_15-03-43) with only the changed files is created in the deploy directory, and the "

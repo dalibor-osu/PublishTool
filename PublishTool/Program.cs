@@ -2,6 +2,7 @@
 using PublishTool.Commands;
 using PublishTool.Configuration;
 using PublishTool.Generated;
+using PublishTool.GitHub;
 using PublishTool.Helpers;
 using Spectre.Console;
 
@@ -18,14 +19,20 @@ Console.CancelKeyPress += (_, e) =>
     e.Cancel = true;
 };
 
-UpdateCommand.CleanUpBackup();
+SelfUpdate.CleanUpBackup();
+
+if (RemovedSwitches.Find(args) is { } removed)
+{
+    AnsiConsole.MarkupLineInterpolated($"[red]{removed}[/]");
+    return 1;
+}
 
 int returnCode = 0;
 var commandResult = CommandParsers.Parse(args);
 if (!commandResult.IsSuccess)
 {
     AnsiConsole.MarkupLine($"[red]An error occurred when running the command:[/] {commandResult.Error}");
-    Logger.Write();
+    Logger.Write(Console.WriteLine);
     return 1;
 }
 
@@ -58,7 +65,7 @@ var commandAction = async Task<int> () =>
     }
 };
 
-if (commandResult.Value.UsesAlternateScreen)
+if (commandResult.Value is IAlternateScreenCommand { UsesAlternateScreen: true })
 {
     AnsiConsole.AlternateScreen(() => Task.Run(async () =>
     {
@@ -75,6 +82,6 @@ else
     returnCode = await commandAction();
 }
 
-Logger.Write();
+Logger.Write(Console.WriteLine);
 
 return returnCode;

@@ -1,20 +1,11 @@
 using System.Diagnostics;
+using PublishTool.Progress;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
 namespace PublishTool.Console;
 
-internal enum JobState
-{
-    Pending,
-    Running,
-    Succeeded,
-    Failed,
-    Skipped,
-    Cancelled
-}
-
-internal sealed class JobRow(string name, int tailLength)
+internal sealed class JobRow(string name, int tailLength) : IStep
 {
     private readonly Lock _lock = new();
     private readonly Queue<string> _tail = new();
@@ -22,23 +13,23 @@ internal sealed class JobRow(string name, int tailLength)
     private readonly Stopwatch _stopwatch = new();
 
     public string Name { get; set; } = name;
-    public JobState State { get; private set; } = JobState.Pending;
+    public StepState State { get; private set; } = StepState.Pending;
     public string? Detail { get; private set; }
     public TimeSpan Elapsed => _stopwatch.Elapsed;
-    public bool IsFinished => State is not (JobState.Pending or JobState.Running);
+    public bool IsFinished => State is not (StepState.Pending or StepState.Running);
 
     public void Start()
     {
-        State = JobState.Running;
+        State = StepState.Running;
         _stopwatch.Start();
     }
 
-    public void Finish(JobState state, string? detail = null)
+    public void Finish(StepState state, string? detail = null)
     {
         _stopwatch.Stop();
         lock (_lock)
         {
-            if (state == JobState.Failed && _errorTail.Count > 0)
+            if (state == StepState.Failed && _errorTail.Count > 0)
             {
                 _tail.Clear();
                 foreach (string line in _errorTail)
@@ -89,7 +80,7 @@ internal sealed class JobRow(string name, int tailLength)
     }
 }
 
-internal sealed class JobDisplay(int tailLength = 5) : IRenderable
+internal sealed class JobDisplay(int tailLength = 5) : IRenderable, IStepList
 {
     private static readonly Style TailStyle = new(Color.Grey);
     private static readonly Style TimeStyle = new(Color.Grey);
@@ -103,7 +94,7 @@ internal sealed class JobDisplay(int tailLength = 5) : IRenderable
     private readonly Stopwatch _total = Stopwatch.StartNew();
     private readonly Spinner _spinner = Spinner.Known.Ascii;
 
-    public JobRow Add(string name)
+    public IStep Add(string name)
     {
         var row = new JobRow(name, tailLength);
         _rows.Add(row);
@@ -124,11 +115,11 @@ internal sealed class JobDisplay(int tailLength = 5) : IRenderable
         var lines = new List<Line>();
         foreach (var row in _rows)
         {
-            lines.Add(new Line(Icon(row, options.Unicode), [Header(row)], row.State == JobState.Pending ? null : Format(row.Elapsed)));
+            lines.Add(new Line(Icon(row, options.Unicode), [Header(row)], row.State == StepState.Pending ? null : Format(row.Elapsed)));
             if (ShowsTail(row))
             {
                 string[] tail = row.Tail();
-                int shown = row.State == JobState.Running ? tailPerRow : Math.Min(tailPerRow, tail.Length);
+                int shown = row.State == StepState.Running ? tailPerRow : Math.Min(tailPerRow, tail.Length);
                 for (int i = 0; i < shown; i++)
                 {
                     int index = tail.Length - shown + i;
@@ -216,14 +207,14 @@ internal sealed class JobDisplay(int tailLength = 5) : IRenderable
         return used + ellipsis.Length;
     }
 
-    private static bool ShowsTail(JobRow row) => row.State is JobState.Running or JobState.Failed;
+    private static bool ShowsTail(JobRow row) => row.State is StepState.Running or StepState.Failed;
 
     private (string Glyph, Style Style) Icon(JobRow row, bool unicode) => row.State switch
     {
-        JobState.Pending => (unicode ? "○" : "-", PendingStyle),
-        JobState.Running => (SpinnerFrame(), WarningStyle),
-        JobState.Succeeded => (unicode ? "✔" : "+", SuccessStyle),
-        JobState.Failed => (unicode ? "✘" : "x", FailureStyle),
+        StepState.Pending => (unicode ? "○" : "-", PendingStyle),
+        StepState.Running => (SpinnerFrame(), WarningStyle),
+        StepState.Succeeded => (unicode ? "✔" : "+", SuccessStyle),
+        StepState.Failed => (unicode ? "✘" : "x", FailureStyle),
         _ => (unicode ? "•" : "~", WarningStyle)
     };
 
@@ -231,10 +222,10 @@ internal sealed class JobDisplay(int tailLength = 5) : IRenderable
     {
         string suffix = row.State switch
         {
-            JobState.Succeeded => " - done",
-            JobState.Failed => " - failed",
-            JobState.Skipped => " - skipped",
-            JobState.Cancelled => " - cancelled",
+            StepState.Succeeded => " - done",
+            StepState.Failed => " - failed",
+            StepState.Skipped => " - skipped",
+            StepState.Cancelled => " - cancelled",
             _ => string.Empty
         };
         if (row.Detail is not null)
@@ -244,10 +235,10 @@ internal sealed class JobDisplay(int tailLength = 5) : IRenderable
 
         var style = row.State switch
         {
-            JobState.Pending => PendingStyle,
-            JobState.Running => RunningStyle,
-            JobState.Succeeded => SuccessStyle,
-            JobState.Failed => FailureStyle,
+            StepState.Pending => PendingStyle,
+            StepState.Running => RunningStyle,
+            StepState.Succeeded => SuccessStyle,
+            StepState.Failed => FailureStyle,
             _ => WarningStyle
         };
 
@@ -257,8 +248,8 @@ internal sealed class JobDisplay(int tailLength = 5) : IRenderable
     private List<(string Text, Style Style)> Summary()
     {
         int finished = _rows.Count(r => r.IsFinished);
-        int failed = _rows.Count(r => r.State == JobState.Failed);
-        int notRun = _rows.Count(r => r.State is JobState.Skipped or JobState.Cancelled);
+        int failed = _rows.Count(r => r.State == StepState.Failed);
+        int notRun = _rows.Count(r => r.State is StepState.Skipped or StepState.Cancelled);
 
         var parts = new List<(string, Style)> { ("Total ", new Style(decoration: Decoration.Bold)) };
         if (finished < _rows.Count)

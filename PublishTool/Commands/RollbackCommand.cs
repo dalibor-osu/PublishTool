@@ -10,11 +10,11 @@ using Spectre.Console;
 namespace PublishTool.Commands;
 
 [Command("rollback", Description = "Restore the files a deploy of a package replaced or deleted (Windows only, needs administrator rights)")]
-public class RollbackCommand(RollbackCommandOptions options) : ICommand<RollbackCommandOptions>
+public class RollbackCommand(RollbackCommandOptions options) : ICommand<RollbackCommandOptions>, IAlternateScreenCommand
 {
     public RollbackCommandOptions Options { get; } = options;
 
-    public bool UsesAlternateScreen => !Options.Yes;
+    public bool UsesAlternateScreen => true;
 
     public async Task<int> ExecuteAsync(CancellationToken ct)
     {
@@ -68,44 +68,23 @@ public class RollbackCommand(RollbackCommandOptions options) : ICommand<Rollback
 
         var store = ConfigStore.Server;
         var config = store.Load();
-        var warnings = CheckChain(journal, config);
+        var warnings = RollbackRunner.CheckChain(journal, config);
         WriteSummary(journal, warnings);
-        if (!await DeploySummary.AcceptAsync(warnings, Options.Yes, $"Roll back {journal.Package}", ct))
+        if (!await DeploySummary.AcceptAsync(warnings, $"Roll back {journal.Package}", ct))
         {
             return 1;
         }
 
-        if (UsesAlternateScreen)
-        {
-            AnsiConsole.Clear();
-        }
+        AnsiConsole.Clear();
 
-        var runner = new RollbackRunner(directory, journal, config, store, new WindowsHostController());
-        return await runner.RunAsync(UsesAlternateScreen) ? 0 : 1;
+        var display = new JobDisplay();
+        var runner = new RollbackRunner(directory, journal, config, store, new WindowsHostController(), display);
+        var work = runner.RunAsync();
+        await JobDisplayRunner.RunAsync(display, work, live: true);
+        return await work ? 0 : 1;
     }
 
-    private static List<string> CheckChain(DeployJournal journal, ServerConfig config)
-    {
-        var warnings = new List<string>();
-        if (journal.State is JournalState.Applying or JournalState.RestoreFailed)
-        {
-            return warnings;
-        }
-
-        foreach (var target in journal.Targets)
-        {
-            string? current = config.RecordFor(target.Path)?.Package;
-            if (!string.Equals(current, journal.Package, StringComparison.OrdinalIgnoreCase))
-            {
-                warnings.Add($"{target.Project}: {target.Path} is at {current ?? "no recorded deploy"}, not at {journal.Package}. "
-                    + "Rolling back restores only the files this package replaced, on top of the newer files.");
-            }
-        }
-
-        return warnings;
-    }
-
-    private static void WriteSummary(DeployJournal journal, List<string> warnings)
+    private static void WriteSummary(DeployJournal journal, IReadOnlyList<DeployWarning> warnings)
     {
         if (journal.State == JournalState.Applying)
         {

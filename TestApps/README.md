@@ -19,7 +19,7 @@ touches files that are not in the package.
 ## End-to-end test on one machine
 
 Requires IIS with ASP.NET 4.8 and the ASP.NET Core Hosting Bundle (10.x), MSBuild on `PATH` and the dev build
-(`dotnet build PublishTool/PublishTool.csproj -c Debug`). Paths below use `C:\PublishToolTest`; run from the
+(`dotnet build PublishTool.slnx -c Debug`, which builds both `PublishTool-dev.exe` and `PublishToolCli-dev.exe`). Paths below use `C:\PublishToolTest`; run from the
 repository root.
 
 1. Copy the apps into a throwaway git repository (the branch name becomes the package prefix):
@@ -36,7 +36,7 @@ repository root.
 
    ```powershell
    .\PublishTool\bin\Debug\net11.0\PublishTool-dev.exe config -dir C:\PublishToolTest\repo
-   .\PublishTool\bin\Debug\net11.0\PublishTool-dev.exe publish -dir C:\PublishToolTest\repo -a
+   .\PublishToolCli\bin\Debug\net11.0\PublishToolCli-dev.exe publish -dir C:\PublishToolTest\repo
    ```
 
 3. In an elevated PowerShell, create the IIS sites (ports 8081, 8082) and the two services:
@@ -65,7 +65,7 @@ repository root.
    Remove-Item C:\PublishToolTest\repo\CoreWebApp\wwwroot\obsolete.txt, C:\PublishToolTest\repo\FrameworkWebApp\Content\obsolete.txt
    (Get-Content C:\PublishToolTest\repo\FrameworkWebApp\FrameworkWebApp.csproj) | Where-Object { $_ -notmatch 'obsolete' } | Set-Content C:\PublishToolTest\repo\FrameworkWebApp\FrameworkWebApp.csproj
    git -C C:\PublishToolTest\repo commit -am v2
-   $env:AppVersion = '2'; .\PublishTool\bin\Debug\net11.0\PublishTool-dev.exe publish -dir C:\PublishToolTest\repo -a; Remove-Item Env:AppVersion
+   $env:AppVersion = '2'; .\PublishToolCli\bin\Debug\net11.0\PublishToolCli-dev.exe publish -dir C:\PublishToolTest\repo; Remove-Item Env:AppVersion
    .\PublishTool\bin\Debug\net11.0\PublishTool-dev.exe deploy -dir (Get-ChildItem C:\PublishToolTest\deploy -Directory | Sort-Object Name | Select-Object -Last 1).FullName
    ```
 
@@ -87,6 +87,23 @@ repository root.
    $lock.Dispose()
    ```
 
-8. Clean up (elevated): `.\TestApps\Remove-TestServer.ps1`, then delete `C:\PublishToolTest`,
+8. Optional, the same server steps with the CLI (elevated, after step 6 left version 1 deployed). Each command
+   prints one line per step; add `--json` to get one result object on stdout:
+
+   ```powershell
+   $cli = '.\PublishToolCli\bin\Debug\net11.0\PublishToolCli-dev.exe'
+   $package = (Get-ChildItem C:\PublishToolTest\deploy -Directory | Sort-Object Name | Select-Object -Last 1).FullName
+   & $cli deploy -dir $package; $LASTEXITCODE               # dry run: plan + warnings, exit 0, nothing changes
+   & $cli deploy -dir $package --yes; $LASTEXITCODE         # deploys version 2, exit 0
+   & $cli rollback -dir $package; $LASTEXITCODE             # dry run of the rollback, exit 0
+   & $cli rollback -dir $package --yes; $LASTEXITCODE       # exit 0, version 1 again
+   ```
+
+   If the dry run lists warnings, `deploy --yes` stops with exit 3 before changing anything; repeat it with
+   `--accept <the codes printed in brackets>`.
+
+   With the lock of step 7 held, `deploy --yes` exits 4 (restore failed); release the lock and run `rollback --yes`.
+
+9. Clean up (elevated): `.\TestApps\Remove-TestServer.ps1`, then delete `C:\PublishToolTest`,
    `C:\ProgramData\PublishTool\server.json` and the `C:\PublishToolTest\repo` entry of
    `%APPDATA%\PublishTool\config.json`.

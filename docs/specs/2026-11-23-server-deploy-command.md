@@ -4,6 +4,10 @@ Status: agreed
 Date: 2026-11-23
 Area: publish deploy step (DeployPreparer, PublishCommand), new deploy command, configuration (Config, ConfigHandler)
 
+Note: the `-y` design below (skip the confirmation, print without the alternate screen, stop on any warning) is
+superseded by `2026-11-24-non-interactive-cli.md`. The TUI's `deploy` and `rollback` no longer have `-y`;
+unattended deploys use `PublishToolCli deploy --yes`, which accepts warnings by code with `--accept`.
+
 ## Context of the change
 
 Today PublishTool only covers the developer machine. `publish` without `-l/--local` builds and publishes the

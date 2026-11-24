@@ -4,7 +4,7 @@
         width = command.Name.size
       end
     end ~}}
-Usage: PublishTool [command] [options]
+Usage: {{ AppName }} [command] [options]
 
 Commands:
 {{~ for command in Commands ~}}
@@ -14,4 +14,4 @@ Commands:
 Options:
   -h, --help  Print this help
 
-Run 'PublishTool <command> --help' for the options of a single command.
+Run '{{ AppName }} <command> --help' for the options of a single command.
