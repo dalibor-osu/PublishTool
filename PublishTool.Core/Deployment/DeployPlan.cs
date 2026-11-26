@@ -38,6 +38,8 @@ public sealed class DeployPlan
 
     public bool IsEmpty => Targets.TrueForAll(t => t.Project.Files.Count == 0 && t.Delete.Count == 0);
 
+    public bool IsAllSkipped => Targets.Count == 0 && Package.SkippedProjects.Count > 0;
+
     public static DeployPlan Create(
         DeployPackage package,
         IReadOnlyDictionary<string, DeployTarget> mappings,

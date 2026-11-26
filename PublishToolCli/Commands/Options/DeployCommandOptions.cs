@@ -31,6 +31,11 @@ public class DeployCommandOptions
         Description = "Windows service of a project for this run, empty name for an IIS app; repeat for more projects")]
     public Dictionary<string, TargetOverride> Services => Targets;
 
+    [Option("--skip", Parser = nameof(ParseSkip), ValueName = "projects",
+        Description = "Comma separated projects of the package not to deploy in this run, in addition to the ones stored as skipped "
+        + "for the prefix; repeatable")]
+    public List<string> Skip { get; set; } = [];
+
     [Option("--json", Description = "Print one JSON result object on stdout at the end; progress goes to stderr")]
     public bool Json { get; set; } = false;
 
@@ -58,4 +63,7 @@ public class DeployCommandOptions
 
     internal static bool ParseService(string value, DeployCommandOptions options, out string? error) =>
         OptionValues.TryAddService(value, options.Targets, out error);
+
+    internal static bool ParseSkip(string value, DeployCommandOptions options, out string? error) =>
+        OptionValues.TryAddProjects(value, "--skip", options.Skip, out error);
 }

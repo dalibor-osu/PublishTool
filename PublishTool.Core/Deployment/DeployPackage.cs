@@ -4,15 +4,18 @@ namespace PublishTool.Deployment;
 
 public sealed class DeployPackage
 {
-    private DeployPackage(string directory, PackageManifest manifest)
+    private DeployPackage(string directory, PackageManifest manifest, IReadOnlyList<string>? skippedProjects = null)
     {
         Directory = directory;
         Manifest = manifest;
+        SkippedProjects = skippedProjects ?? [];
     }
 
     public string Directory { get; }
 
     public PackageManifest Manifest { get; }
+
+    public IReadOnlyList<string> SkippedProjects { get; }
 
     public string BackupDirectory => BackupDirectoryOf(Directory);
 
@@ -44,6 +47,27 @@ public sealed class DeployPackage
         }
 
         return package;
+    }
+
+    public DeployPackage WithoutProjects(IReadOnlyCollection<string> skipped)
+    {
+        if (skipped.Count == 0)
+        {
+            return this;
+        }
+
+        bool IsSkipped(ManifestProject project) => skipped.Contains(project.Name, StringComparer.OrdinalIgnoreCase);
+        var manifest = new PackageManifest
+        {
+            Format = Manifest.Format,
+            ToolVersion = Manifest.ToolVersion,
+            Name = Manifest.Name,
+            Prefix = Manifest.Prefix,
+            Created = Manifest.Created,
+            PreviousReference = Manifest.PreviousReference,
+            Projects = [.. Manifest.Projects.Where(p => !IsSkipped(p))]
+        };
+        return new DeployPackage(Directory, manifest, [.. SkippedProjects, .. Manifest.Projects.Where(IsSkipped).Select(p => p.Name)]);
     }
 
     public string ProjectDirectory(ManifestProject project)
@@ -112,7 +136,9 @@ public sealed class DeployPackage
         var extra = new List<string>();
         foreach (string directory in System.IO.Directory.EnumerateDirectories(Directory))
         {
-            if (string.Equals(Path.GetFileName(directory), PackagePaths.BackupDirectoryName, StringComparison.OrdinalIgnoreCase))
+            string name = Path.GetFileName(directory);
+            if (string.Equals(name, PackagePaths.BackupDirectoryName, StringComparison.OrdinalIgnoreCase)
+                || SkippedProjects.Contains(name, StringComparer.OrdinalIgnoreCase))
             {
                 continue;
             }

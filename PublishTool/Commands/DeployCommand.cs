@@ -60,6 +60,13 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
                 + $"'PublishTool rollback -dir {package.Directory}' first; deploying again would overwrite the backup.");
         }
 
+        var store = ConfigStore.Server;
+        var config = store.Load();
+        var hosts = new WindowsHostController();
+        var resolution = ServerConfigHandler.ResolveTargets(
+            store, config, package.Manifest.Prefix, [.. package.Manifest.Projects.Select(p => p.Name)], hosts.ServiceExists);
+        package = package.WithoutProjects(resolution.Skipped);
+
         AnsiConsole.MarkupLineInterpolated($"Verifying {package.FileCount} files of {package.Manifest.Name}...");
         var verification = package.Verify(_ => { }, ct);
         if (verification.Errors.Count > 0)
@@ -70,12 +77,7 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
             return 1;
         }
 
-        var store = ConfigStore.Server;
-        var config = store.Load();
-        var hosts = new WindowsHostController();
-        var mappings = ServerConfigHandler.ResolveTargets(
-            store, config, package.Manifest.Prefix, [.. package.Manifest.Projects.Select(p => p.Name)], hosts.ServiceExists);
-        var plan = DeployPlan.Create(package, mappings, config, hosts, BuildInfo.Version, ct);
+        var plan = DeployPlan.Create(package, resolution.Targets, config, hosts, BuildInfo.Version, ct);
         DeploySummary.WritePlan(plan, verification, BuildInfo.Version);
 
         if (plan.Errors.Count > 0)
@@ -86,6 +88,12 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
         if (Options.DryRun)
         {
             AnsiConsole.MarkupLine("[green]Dry run, nothing was changed.[/]");
+            return 0;
+        }
+
+        if (plan.IsAllSkipped)
+        {
+            AnsiConsole.MarkupLine("[green]No project of the package is deployed on this server, nothing to deploy.[/]");
             return 0;
         }
 

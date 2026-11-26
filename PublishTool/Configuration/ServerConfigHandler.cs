@@ -4,7 +4,7 @@ namespace PublishTool.Configuration;
 
 public static class ServerConfigHandler
 {
-    public static IReadOnlyDictionary<string, DeployTarget> ResolveTargets(
+    public static TargetResolution ResolveTargets(
         ConfigStore<ServerConfig> store,
         ServerConfig config,
         string prefix,
@@ -14,7 +14,7 @@ public static class ServerConfigHandler
         var resolution = DeployTargets.Resolve(config, prefix, projects);
         if (resolution.Missing.Count == 0)
         {
-            return resolution.Targets;
+            return resolution;
         }
 
         AnsiConsole.MarkupLineInterpolated(
@@ -22,13 +22,20 @@ public static class ServerConfigHandler
         var environment = config.EnvironmentFor(prefix);
         foreach (string project in resolution.Missing)
         {
-            environment.Targets[project] = AskTarget(prefix, project, serviceExists);
+            if (AnsiConsole.Confirm($"Is [green]{Markup.Escape(project)}[/] deployed on this server?"))
+            {
+                environment.Targets[project] = AskTarget(prefix, project, serviceExists);
+            }
+            else
+            {
+                environment.Skip(project);
+            }
         }
 
         store.Save(config);
         AnsiConsole.MarkupLineInterpolated($"Saved to [grey]{store.Path}[/]");
         AnsiConsole.WriteLine();
-        return DeployTargets.Resolve(config, prefix, projects).Targets;
+        return DeployTargets.Resolve(config, prefix, projects);
     }
 
     private static DeployTarget AskTarget(string prefix, string project, Func<string, bool> serviceExists)

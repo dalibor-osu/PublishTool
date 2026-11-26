@@ -48,6 +48,25 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
                 + $"'{SelfUpdate.Cli.AppName} rollback --yes -dir \"{package.Directory}\"' first; deploying again would overwrite the backup.");
         }
 
+        CheckSkipOption(package);
+        var store = ConfigStore.Server;
+        var config = store.Load();
+        var hosts = new WindowsHostController();
+        var resolution = DeployTargets.Resolve(
+            config, package.Manifest.Prefix, [.. package.Manifest.Projects.Select(p => p.Name)], Options.Targets, Options.Skip);
+        if (resolution.Missing.Count > 0)
+        {
+            result.MissingTargets = [.. resolution.Missing];
+            string first = resolution.Missing[0];
+            return output.Fail(result, ExitCodes.InvalidArguments,
+                $"No target directory is set for {string.Join(", ", resolution.Missing)} in packages of '{package.Manifest.Prefix}' in {store.Path}. "
+                + $"Pass --target {first}=<absolute path> (plus --service {first}=<name> for a Windows service) or --skip {first} for this run, "
+                + $"or store it with '{SelfUpdate.Cli.AppName} config --prefix {package.Manifest.Prefix} --target {first}=<absolute path>' "
+                + $"(or --skip {first} when it is not deployed on this server)");
+        }
+
+        package = package.WithoutProjects(resolution.Skipped);
+        result.Skipped = [.. resolution.Skipped];
         output.Line($"Verifying {package.FileCount} files of {package.Manifest.Name}...");
         var verification = package.Verify(_ => { }, ct);
         result.ExtraFiles = [.. verification.ExtraFiles];
@@ -62,21 +81,7 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
                 $"The package does not match its manifest ({verification.Errors.Count} problem(s)), was it copied completely?");
         }
 
-        var store = ConfigStore.Server;
-        var config = store.Load();
-        var hosts = new WindowsHostController();
-        var resolution = DeployTargets.Resolve(config, package.Manifest.Prefix, [.. package.Manifest.Projects.Select(p => p.Name)], Options.Targets);
-        if (resolution.Missing.Count > 0)
-        {
-            result.MissingTargets = [.. resolution.Missing];
-            string first = resolution.Missing[0];
-            return output.Fail(result, ExitCodes.InvalidArguments,
-                $"No target directory is set for {string.Join(", ", resolution.Missing)} in packages of '{package.Manifest.Prefix}' in {store.Path}. "
-                + $"Pass --target {first}=<absolute path> (plus --service {first}=<name> for a Windows service) for this run, or store it with "
-                + $"'{SelfUpdate.Cli.AppName} config --prefix {package.Manifest.Prefix} --target {first}=<absolute path>'");
-        }
-
-        var plan = DeployPlan.Create(package, resolution.Targets, config, hosts, BuildInfo.Version, ct);
+        var plan =DeployPlan.Create(package, resolution.Targets, config, hosts, BuildInfo.Version, ct);
         WritePlan(output, result, plan, verification, Options.Accept);
         if (plan.Errors.Count > 0)
         {
@@ -104,6 +109,12 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
         if (!Options.Executes)
         {
             output.Line(Options.Yes ? "Dry run, nothing was changed." : "Dry run, nothing was changed. Run again with --yes to deploy.");
+            return ExitCodes.Success;
+        }
+
+        if (plan.IsAllSkipped)
+        {
+            output.Line("No project of the package is deployed on this server, nothing to deploy.");
             return ExitCodes.Success;
         }
 
@@ -142,6 +153,20 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
         }
     }
 
+    private void CheckSkipOption(DeployPackage package)
+    {
+        if (Options.Skip.FirstOrDefault(p => !package.Manifest.Projects.Exists(m => string.Equals(m.Name, p, StringComparison.OrdinalIgnoreCase)))
+            is { } unknown)
+        {
+            throw new CliArgumentException($"--skip {unknown}: the package has no project {unknown}");
+        }
+
+        if (Options.Skip.FirstOrDefault(Options.Targets.ContainsKey) is { } conflict)
+        {
+            throw new CliArgumentException($"{conflict} cannot be given with both --skip and --target/--service");
+        }
+    }
+
     private static void WritePlan(
         CliOutput output, DeployCliResult result, DeployPlan plan, PackageVerification verification, IReadOnlyCollection<string> accepted)
     {
@@ -156,6 +181,11 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
                 + $"{target.Delete.Count} deleted; deployed now: {target.Current?.Package ?? "-"}; based on: {basedOn}");
             result.Targets.Add(new CliDeployTarget(target.Project.Name, target.TargetPath, target.ServiceName, target.Create.Count,
                 target.Overwrite.Count, target.Delete.Count, target.Current?.Package, target.Project.Base, target.Project.IsFullPublish));
+        }
+
+        if (plan.Package.SkippedProjects.Count > 0)
+        {
+            output.Line($"  Not deployed on this server: {string.Join(", ", plan.Package.SkippedProjects)}");
         }
 
         if (verification.ExtraFiles.Count > 0)
