@@ -4,7 +4,9 @@ Guidance for AI agents (and humans) working in this repository. Additional info 
 
 > **Keep this file current.** Whenever a change touches anything described here (commands, options, config
 > keys, the deploy workflow, file layout, build/release process, conventions), update the relevant section of
-> this CLAUDE.md in the same change. Treat an outdated CLAUDE.md as a bug.
+> this CLAUDE.md in the same change. Treat an outdated CLAUDE.md as a bug. The same holds for
+> `skills/publishtool/SKILL.md`, the skill agents use PublishToolCli from: when behavior it describes changes,
+> update it in the same change (see "Repository layout").
 
 ## What PublishTool is
 
@@ -116,7 +118,17 @@ PublishTool.Tests/                xUnit tests of the core and the CLI parsing (t
 TestApps/                         Four sample apps (Core/Framework x IIS/service) + scripts for an end-to-end deploy test
 docs/specs/                       Agreed design specifications
 docs/impl/                        Implementation notes per spec
+skills/publishtool/SKILL.md       Claude skill for users of PublishToolCli (workflow and safety rules, not option syntax)
 ```
+
+`skills/publishtool/SKILL.md` teaches an AI agent in another repository how to install and use PublishToolCli; users
+copy it into their own skills directory (see `README.md`). It leaves the option syntax to `--help` on purpose, but it
+describes the behavior an agent relies on: how to install and update the tool (release asset names, archive layout),
+the publish, deploy and rollback workflows, which commands change something, the exit codes, every warning code and
+what it means, and the JSON result fields it tells the agent to read. **Whenever a change alters any of that behavior
+(a new or changed command, option that widens what a run does, warning code, exit code, result field, journal state,
+release naming, requirement), update the skill in the same change**, exactly like this file. A skill that describes
+old behavior is a bug, because agents act on servers from it.
 
 ## Tests
 
