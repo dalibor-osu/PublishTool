@@ -37,6 +37,57 @@ public class OverridesTests
     }
 
     [Fact]
+    public void Resolve_KeepPatterns_AreCopiedAndMergedWithTheOverride()
+    {
+        var config = StoredTargets();
+        config.Environments["uat"].Targets["Web"].Keep.Add("logs/**");
+        var overrides = new Dictionary<string, TargetOverride> { ["web"] = new() { Path = @"D:\other\web" } };
+        overrides["web"].Keep.AddRange(["LOGS/**", "*.log"]);
+
+        var resolution = DeployTargets.Resolve(config, "uat", ["Web"], overrides);
+
+        Assert.Equal(["logs/**", "*.log"], resolution.Targets["Web"].Keep);
+        Assert.Equal(["logs/**"], config.Environments["uat"].Targets["Web"].Keep);
+    }
+
+    [Fact]
+    public void Merge_ChangingATarget_KeepsItsKeepPatterns()
+    {
+        var stored = new DeployTarget { Path = @"C:\sites\web", Keep = ["logs/**"] };
+        var change = new TargetOverride { Path = @"D:\sites\web" };
+        change.Keep.Add("*.log");
+
+        var merged = PublishToolCli.Commands.ConfigCommand.Merge(stored, "Web", change);
+
+        Assert.Equal(@"D:\sites\web", merged.Path);
+        Assert.Equal(["logs/**", "*.log"], merged.Keep);
+    }
+
+    [Fact]
+    public void ServerConfig_KeepPatterns_SurviveSavingAndLoading()
+    {
+        using var temp = new Support.TempDirectory();
+        var store = new ConfigStore<ServerConfig>(
+            temp.Combine("server.json"),
+            ServerConfigVersions.Current,
+            ServerConfigVersions.Parsers,
+            ServerConfigVersions.Migrators,
+            JsonContext.Default.ServerConfig);
+        var config = store.Load();
+        var target = new DeployTarget { Path = @"C:\sites\web" };
+        Assert.True(target.AddKeep("logs/**"));
+        Assert.False(target.AddKeep("LOGS/**"));
+        config.EnvironmentFor("uat").Targets["Web"] = target;
+        store.Save(config);
+
+        var loaded = store.Load().Environments["uat"].Targets["Web"];
+
+        Assert.Equal(["logs/**"], loaded.Keep);
+        Assert.True(loaded.RemoveKeep("Logs/**"));
+        Assert.Empty(loaded.Keep);
+    }
+
+    [Fact]
     public void Resolve_UnknownPrefix_ReportsMissingAndAddsNoEnvironment()
     {
         var config = new ServerConfig();

@@ -4,7 +4,9 @@ Guidance for AI agents (and humans) working in this repository. Additional info 
 
 > **Keep this file current.** Whenever a change touches anything described here (commands, options, config
 > keys, the deploy workflow, file layout, build/release process, conventions), update the relevant section of
-> this CLAUDE.md in the same change. Treat an outdated CLAUDE.md as a bug.
+> this CLAUDE.md in the same change. Treat an outdated CLAUDE.md as a bug. The same holds for
+> `skills/publishtool/SKILL.md`, the skill agents use PublishToolCli from: when behavior it describes changes,
+> update it in the same change (see "Repository layout").
 
 ## What PublishTool is
 
@@ -17,12 +19,15 @@ a repository with MSBuild and, unless `-l/--local` is given, prepares an increme
 2. Publishes every selected project in parallel into `<publish dir>\<ProjectName>` (cleared first).
 3. Without `--local`: downloads the previous full publish of the current git branch from a shared network
    directory (stored there as a single zip), extracts and compares it locally, writes only the changed files
-   plus a manifest (hashes of new and replaced files, deleted files, base package) into a local package directory,
-   and uploads a new zip of the full publish as the reference for next time.
+   plus a manifest (hashes of new and replaced files, deleted files, base package) and an inventory (every file
+   of the full publish with size and hash) into a local package directory, and uploads a new zip of the full
+   publish as the reference for next time.
 
 On the server, `deploy` applies such a package to the IIS apps and Windows services mapped for its branch
 prefix (backup, stop, copy and delete, start, with automatic rollback on any failure), and `rollback` undoes
-a deploy. See "The server deploy" below; the design is in `docs/specs/2026-11-23-server-deploy-command.md`.
+a deploy. On request deploy also cleans the targets with the inventory: it deletes files that are not part of the
+publish and reports files that differ or are missing. See "The server deploy" below; the design is in
+`docs/specs/2026-11-23-server-deploy-command.md`.
 
 It ships as two independent executables over one core library (design: `docs/specs/2026-11-24-non-interactive-cli.md`):
 
@@ -65,7 +70,10 @@ PublishTool.Core/                 Shared library (net11.0, IsAotCompatible, no S
     DeployTargets.cs              Resolve(config, prefix, projects, overrides, skip): targets + missing + skipped, never mutates the config
   Deployment/                     Package manifest, lineage and everything deploy and rollback do
     PackageManifest.cs / ReferenceLineage.cs / PackageJson.cs / PackagePaths.cs / DeployPackage.cs / DeployJournal.cs
-    DeployPlan.cs                 Per target: files to create / overwrite / delete, coded warnings, errors
+    PackageInventory.cs           publishtool-inventory.json: every file of the full publish per project (path, size, SHA-256)
+    DeployPlan.cs                 Per target: files to create / overwrite / delete, coded warnings, errors; Clean / ResetClean
+    TargetCleaner.cs              Walks one target for the clean: stray files, empty directories, mismatched and missing files
+    KeepPatterns.cs               The keep patterns of a target (matching and validation)
     DeployWarning.cs              DeployWarning(Code, Message, Files) and WarningCodes (the stable codes --accept takes)
     ConfigFiles.cs                The fixed config file name patterns behind the config-changed warning
     DeployExecutor.cs             Backup, Apply and the idempotent Restore
@@ -91,6 +99,7 @@ PublishTool/                      The TUI exe (PublishAot, InvariantGlobalizatio
   Console/JobDisplay.cs           JobRow (an IStep) / JobDisplay (an IStepList): the redrawn progress table
   Console/JobDisplayRunner.cs     Redraw loop for a JobDisplay while work runs
   Console/DeploySummary.cs        Summary table, warnings/errors and the accept/confirm prompt of deploy and rollback
+  Console/CleanReview.cs          The clean question of deploy, its findings, the keep pattern prompt and the report file
   Console/BackKeyConsole.cs       IAnsiConsole wrapper whose input throws BackRequestedException on Esc / Left arrow
 PublishToolCli/                   The CLI exe (PublishAot, InvariantGlobalization, no Spectre); RootNamespace PublishToolCli
   Program.cs                      Ctrl+C handling, parse args (no default command), run, log path to stderr
@@ -109,7 +118,17 @@ PublishTool.Tests/                xUnit tests of the core and the CLI parsing (t
 TestApps/                         Four sample apps (Core/Framework x IIS/service) + scripts for an end-to-end deploy test
 docs/specs/                       Agreed design specifications
 docs/impl/                        Implementation notes per spec
+skills/publishtool/SKILL.md       Claude skill for users of PublishToolCli (workflow and safety rules, not option syntax)
 ```
+
+`skills/publishtool/SKILL.md` teaches an AI agent in another repository how to install and use PublishToolCli; users
+copy it into their own skills directory (see `README.md`). It leaves the option syntax to `--help` on purpose, but it
+describes the behavior an agent relies on: how to install and update the tool (release asset names, archive layout),
+the publish, deploy and rollback workflows, which commands change something, the exit codes, every warning code and
+what it means, and the JSON result fields it tells the agent to read. **Whenever a change alters any of that behavior
+(a new or changed command, option that widens what a run does, warning code, exit code, result field, journal state,
+release naming, requirement), update the skill in the same change**, exactly like this file. A skill that describes
+old behavior is a bug, because agents act on servers from it.
 
 ## Tests
 
@@ -120,7 +139,10 @@ and `target-modified` with their file lists),
 backup/apply/restore, the deploy and rollback runners (with `FakeHostController` and a sandboxed
 `ConfigStore<ServerConfig>`, no administrator rights), change collection and lineage, skipped projects (resolution,
 filtered verification and plan), target and settings overrides
-(including that overrides never change the stored config), self-update asset names and the CLI option parsing.
+(including that overrides never change the stored config), the inventory (every published file, reused hashes,
+carried projects), keep patterns, the clean (stray, kept, protected, mismatched and missing files, nested targets,
+hidden files and junctions, projects that are not in the package, deploy and rollback of a clean), self-update asset
+names and the CLI option parsing.
 Tests never use `ConfigStore.Default` or `ConfigStore.Server`, which point at the real config of the machine.
 
 Not covered: the TUI (prompts, alternate screen), MSBuild publishing and real IIS/services. `publish` of the TUI needs
@@ -220,16 +242,18 @@ so `auto` bump works.
   every progress line to stderr, and the log-file notice of `Logger.Write` always goes to stderr. The JSON carries
   `schemaVersion` (`CliResult.CurrentSchemaVersion`, independent of the tool version): within one schema version
   changes are additive only; renaming or removing a field means a new schema version. A warning about files
-  (`config-changed`, `target-modified`) names the first `DeployWarning.MaxListedFiles` in its message and carries the
-  complete list in its `files` field; other warnings have no `files`.
+  (`config-changed`, `target-modified`, `clean-delete`, `clean-mismatch`, `clean-missing`) names the first
+  `DeployWarning.MaxListedFiles` in its message and carries the complete list in its `files` field; other warnings
+  have no `files`. In the `files` of `clean-delete` a path ending in `/` is an empty directory that is removed.
 - **CLI exit codes** (`ExitCodes`): 0 success (a dry run whose package and plan are valid exits 0 whatever warnings
   it lists; verification or plan errors are 1, missing targets 2), 1 failed, 2 invalid arguments or missing
   configuration, 3 stopped on warnings not accepted with `--accept`, 4 a deploy failed and its automatic restore failed
   too (journal `RestoreFailed`, run `rollback`), 130 cancelled. Missing administrator rights for `--yes` is exit 1.
   The TUI keeps 0/1.
 - **Warning codes** (`WarningCodes`): `tool-version`, `target-missing`, `already-deployed`, `full-publish`,
-  `unknown-base`, `no-record`, `chain-mismatch`, `config-changed`, `target-modified` (deploy), `newer-deploy`
-  (rollback), `downgrade` (CLI update). They are
+  `unknown-base`, `no-record`, `chain-mismatch`, `config-changed`, `target-modified` (deploy), `clean-delete`,
+  `clean-mismatch`, `clean-missing` (deploy with the clean), `newer-deploy` (rollback), `downgrade` (CLI update).
+  They are
   part of the CLI's public contract: never rename one, and give a new check a new code so existing scripts never
   accept it by accident.
 - **Going back in prompts** (TUI): Spectre prompts have no back key, so a prompt that should support it is shown on
@@ -278,7 +302,16 @@ so `auto` bump works.
   `ServerConfigHandler.ResolveTargets` (first "is it deployed on this server?", then absolute path and service,
   which must exist on the machine) and stored; the CLI fails with exit 2 instead. `PublishToolCli config --prefix <p>`
   shows, sets, changes and removes targets and skips (`--target`, `--service`, `--remove-target`, `--skip`,
-  `--remove-skip`); writing `server.json` usually needs an elevated terminal.
+  `--remove-skip`); writing `server.json` usually needs an elevated terminal. A target also has `Keep`, the patterns
+  of files and directories the clean leaves alone (added like `Skipped`, without a format version bump, so an older
+  PublishTool that saves `server.json` drops them). Every place that rebuilds a `DeployTarget` from a stored one
+  (`DeployTargets.Resolve`, the CLI's `ConfigCommand.Merge`) must copy `Keep`, otherwise changing a path silently
+  removes the protection of logs and uploads. Pattern rules (`KeepPatterns`): `/` or `\` separates segments, `*` and
+  `?` match inside one segment, `**` matches any number of segments, case-insensitive; a pattern with a separator is
+  relative to the target directory (`logs/**`, `wwwroot/uploads`), one without matches a name at any depth (`*.log`,
+  `App_Data`); whatever matches a directory keeps everything below it and the directory itself. Rooted patterns and
+  `.`/`..` segments are rejected. The CLI sets them with `config --prefix <p> --keep <project=pattern>` /
+  `--remove-keep` and adds per-run ones with `deploy --keep`; the TUI asks for them in the clean review.
 - **Config format versions**: the file carries `Version` (files without it are version 1). `ConfigStore`
   reads the version, parses with that version's `ConfigParser`, runs the `ConfigMigrator` chain step by step
   to `ConfigVersions.Current`, then backs the old file up as `config.v<N>.json.bak` and saves the upgraded
@@ -358,12 +391,19 @@ Steps, each its own step in the UI (five deploy steps in total):
    new format. A project with no changes and no
    deletions is left out of the manifest. Each project's `Base` is the package that last published it,
    read from the reference's lineage; `IsFullPublish` is set when the reference did not contain the project.
-   The manifest is written to the `.tmp` work directory here.
+   The manifest is written to the `.tmp` work directory here. The same pass builds the inventory
+   (`PackageInventory`, `publishtool-inventory.json`): every file of every published project with size and
+   SHA-256, also for projects without changes, plus the projects carried over from the reference. It costs no
+   extra hashing after the first publish of a branch: a changed file is hashed for the manifest anyway, an
+   unchanged one takes its hash from the inventory inside the previous reference, and only files that inventory
+   does not know are hashed. The inventory is written into the package directory right away (it means nothing
+   without the manifest) and is always written; there is no switch for it.
 3. **Compress**: the full publish is zipped to `<deploy dir>\<name>.tmp\<name>.zip`. Projects that exist in
    the previous reference but were not published this time are carried over from the extracted reference,
    so the reference stays complete for partial publishes. A legacy `Deploy` subdirectory is skipped. The zip
    root gets `publishtool-lineage.json`: project -> the package that last changed it (this package for
-   changed projects, the previous value for unchanged and carried projects).
+   changed projects, the previous value for unchanged and carried projects) and `publishtool-inventory.json`,
+   the same inventory the package gets, which the next publish reads its hashes from.
 4. **Upload**: the zip is streamed to `<shared>\<name>.zip.uploading` with percent progress, then renamed
    to `<name>.zip`. Only then is the manifest moved to `<deploy dir>\<name>\publishtool-manifest.json`
    (if that fails, the new reference is deleted again), so a package without a committed reference never
@@ -459,6 +499,54 @@ stopped, resets the records to the journal's previous ones and deletes the backu
 the CLI is a dry run without `--yes` and stops with exit 3 on a warning not accepted with `--accept newer-deploy`.
 Backups are otherwise never pruned; deleting a package directory deletes its backup.
 
+### The clean
+
+`DeployPlan.Clean(inventory, overrides, skip, ct)` runs on a plan that already exists, in the preflight, so a dry run
+shows it and nothing is deleted before the backup. It needs `publishtool-inventory.json` in the package
+(`DeployPackage.LoadInventory` refuses a missing one and one whose package name is not the manifest's). The
+inventory is the complete state a target should have after the package, so the clean does not depend on the
+chain check. It covers every project of the inventory that has a target on this server and is not skipped, also
+projects that are not in the manifest (published without changes, or carried over): such a project becomes a
+clean-only `TargetPlan` (`IsCleanOnly`, journal `CleanOnly`) when there is something to delete, its hosts are stopped
+like any other, but it gets no `Deployed` record, is left out when records are reset and is ignored by the
+`newer-deploy` check. Inventory projects without a target are never asked for and never an error; they are listed
+as not cleaned.
+
+`TargetCleaner` walks the target itself (hidden and system files included) and sorts what it finds:
+
+- kept: whatever matches a keep pattern of the target (stored `Keep` plus per-run `--keep`) is neither deleted nor
+  compared nor reported as missing;
+- never entered: reparse points (junctions, symlinks), directories that cannot be listed, and every other target
+  path of `server.json` (all prefixes), of this run and the package directory, so a target nested in another one
+  (an IIS sub-application) is not deleted with its parent;
+- stray: a file that is not in the inventory is deleted, unless the package already deletes it;
+- protected: a stray config file (`ConfigFiles`) is never deleted, only listed (`DeployPlan.ProtectedConfigFiles`,
+  not a warning);
+- mismatched: a file of the inventory that the package does not contain and whose size or SHA-256 differs is
+  reported, as is one that cannot be read; the package holds only changes, so it cannot repair them;
+- missing: a file of the inventory that is neither on the target nor in the package is reported;
+- empty directories: a directory that is empty after the clean and does not belong to the publish is removed,
+  also one that was empty before.
+
+Each target gets up to three warnings with the files attached: `clean-delete` (stray files and empty directories),
+`clean-mismatch` and `clean-missing`. Stray files are backed up and journaled like deleted files (`BackedUp`), the
+removed directories go into the journal's `RemovedDirectories`, so the automatic restore and `rollback` bring both
+back. Backup copies lose a read-only attribute so the backup can always be removed, and a read-only stray file is
+made writable before it is deleted. At apply time a directory is removed only if it is still empty.
+`ResetClean` undoes a computed clean on the plan; `Clean` starts with it, so it can run again after a keep pattern
+was added.
+
+- **CLI**: `deploy --clean` (plus `--keep <project=pattern>` for this run). The dry run lists everything; with
+  `--yes` a clean warning that is not in `--accept` stops with exit 3 before anything else, also when the package
+  itself has nothing to deploy. `--keep` without `--clean`, or for a project the package does not have, is exit 2;
+  a package without an inventory is exit 1. The JSON has `clean`, `notCleaned`, `protectedConfigFiles` and per target
+  `cleanOnly`, `cleanFiles`, `cleanDirectories`.
+- **TUI**: there is no switch. When the package has an inventory, deploy asks after the last confirmation whether to
+  clean (default no). A yes computes the clean, shows the findings and writes the complete lists to
+  `<package>\publishtool-clean.txt`, then offers: accept and continue, add a keep pattern for a project (stored in
+  `server.json`, the clean is computed again), continue without cleaning, or cancel. A package without changes
+  still gets the question, so a server can be cleaned with it.
+
 ## Usage guide (end user)
 
 ```
@@ -476,12 +564,14 @@ PublishToolCli <command> [options]           non-interactive CLI, never prompts
             --publish-dir <path>  --shared-dir <path>  --deploy-dir <path>  --ignore <dirs>  --json  --verbose
   deploy    -dir <package dir>  -y|--yes  --dry-run  --accept <codes>
             --target <project=path>...  --service <project=name>...  --skip <projects>...
+            --clean  --keep <project=pattern>...
             --json  --verbose                                                    (server; --yes needs elevation)
   rollback  -dir <package dir>  -y|--yes  --accept newer-deploy  --json  --verbose   (server; --yes needs elevation)
   config    -dir <path>  [--publish-dir|--shared-dir|--deploy-dir <path>]  [--ignore|--publishable <list>]
             [--unset <keys>]  --json
   config    --prefix <prefix>  [--target <project=path>]...  [--service <project=name>]...
-            [--remove-target <project>]...  [--skip <projects>]...  [--remove-skip <projects>]...  --json
+            [--remove-target <project>]...  [--skip <projects>]...  [--remove-skip <projects>]...
+            [--keep <project=pattern>]...  [--remove-keep <project=pattern>]...  --json
   update    -pre|--pre-release  --fetch  -v|--version <version>  --accept downgrade  --json
   version   --json
   -h, --help  on every command; PublishToolCli --help also lists the exit and warning codes
@@ -515,7 +605,17 @@ PublishToolCli <command> [options]           non-interactive CLI, never prompts
    with `config-changed` when it overwrites or deletes a config file and with `target-modified` when a file on the
    server is not what the package expects to replace; `PublishToolCli deploy --dry-run --json` lists all files. Keep the package directory: it holds the backup. `rollback -dir <package>`
    (with `--yes` in the CLI) undoes the deploy.
-4. **Update the tool**: `PublishTool update` / `PublishToolCli update` (or `update --fetch` to only check); each
+4. **Clean a server**: target directories collect files that no publish contains any more (from before the tool
+   deleted files, from skipped packages, from manual copies). Copy `publishtool-inventory.json` to the server together
+   with the manifest. First tell the tool what lives only on the server:
+   `PublishToolCli config --prefix <p> --keep Web=logs/** --keep Web=App_Data` (or add the patterns in the TUI when it
+   shows what it would delete). Then `PublishToolCli deploy -dir <package> --clean` shows the files it would delete,
+   the config files it leaves alone and the files that differ from the publish or are missing, and
+   `PublishToolCli deploy -dir <package> --clean --yes --accept clean-delete` (plus `clean-mismatch` / `clean-missing`
+   when you reviewed those) deploys and cleans in one run. In the TUI, `PublishTool deploy` asks about the clean after
+   the confirmation. Files that differ or are missing are only reported: a package holds changes, not the whole
+   publish. `rollback` restores the deleted files too.
+5. **Update the tool**: `PublishTool update` / `PublishToolCli update` (or `update --fetch` to only check); each
    replaces only its own executable. Dev builds cannot update. The previous executable is kept as `<exe>.old` and
    removed on the next start. Without `-pre` the target is the newest GitHub release not marked as a pre-release;
    with `-pre` it is the newest release of any kind, so a full release wins over older pre-releases; `-v <version>`

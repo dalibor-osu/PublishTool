@@ -20,8 +20,18 @@ public class DeployCommandOptions
     [Option("--accept", Parser = nameof(ParseAccept), ValueName = "codes",
         Description = "Comma separated warning codes to accept; any other warning stops the deploy with exit code 3. "
         + "Codes: tool-version, target-missing, already-deployed, full-publish, unknown-base, no-record, chain-mismatch, config-changed, "
-        + "target-modified")]
+        + "target-modified, and with --clean: clean-delete, clean-mismatch, clean-missing")]
     public List<string> Accept { get; set; } = [];
+
+    [Option("--clean", Description = "Also clean the targets with the package's publishtool-inventory.json: delete files that are not "
+        + "part of the publish, remove empty directories, and warn about files that differ from the publish or are missing. Config files "
+        + "and everything matching a keep pattern of the target are left alone")]
+    public bool Clean { get; set; } = false;
+
+    [Option("--keep", Parser = nameof(ParseKeep), ValueName = "project=pattern",
+        Description = "With --clean: a pattern of files or directories of a project that this run does not delete or compare, in addition "
+        + "to the stored ones (Web=logs/**, Web=*.log); repeat for more patterns")]
+    public Dictionary<string, TargetOverride> Keep => Targets;
 
     [Option("--target", Parser = nameof(ParseTarget), ValueName = "project=path",
         Description = "Absolute target directory of a project for this run instead of the stored one; repeat for more projects")]
@@ -63,6 +73,9 @@ public class DeployCommandOptions
 
     internal static bool ParseService(string value, DeployCommandOptions options, out string? error) =>
         OptionValues.TryAddService(value, options.Targets, out error);
+
+    internal static bool ParseKeep(string value, DeployCommandOptions options, out string? error) =>
+        OptionValues.TryAddKeep(value, options.Targets, out error);
 
     internal static bool ParseSkip(string value, DeployCommandOptions options, out string? error) =>
         OptionValues.TryAddProjects(value, "--skip", options.Skip, out error);

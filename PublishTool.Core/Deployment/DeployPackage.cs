@@ -23,6 +23,29 @@ public sealed class DeployPackage
 
     public int FileCount => Manifest.Projects.Sum(p => p.Files.Count);
 
+    public string InventoryPath => Path.Combine(Directory, PackageInventory.FileName);
+
+    public bool HasInventory => File.Exists(InventoryPath);
+
+    public PackageInventory LoadInventory()
+    {
+        if (!HasInventory)
+        {
+            throw new DeployException(
+                $"{InventoryPath} was not found, so the targets cannot be cleaned. The package was created by a PublishTool version "
+                + "that did not write it yet, or the file was not copied to the server.");
+        }
+
+        var inventory = PackageJson.ReadInventory(InventoryPath);
+        if (!string.Equals(inventory.Package, Manifest.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DeployException(
+                $"{InventoryPath} belongs to the package {inventory.Package}, not to {Manifest.Name}, so the targets cannot be cleaned.");
+        }
+
+        return inventory;
+    }
+
     public static string BackupDirectoryOf(string packageDirectory) => Path.Combine(packageDirectory, PackagePaths.BackupDirectoryName);
 
     public static string JournalPathOf(string packageDirectory) => Path.Combine(BackupDirectoryOf(packageDirectory), DeployJournal.FileName);

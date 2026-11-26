@@ -8,6 +8,19 @@ namespace PublishTool.Tests.Support;
 public sealed class PackageBuilder(TempDirectory root, string name = "uat_2026-01-01_12-00-00", string prefix = "uat")
 {
     private readonly List<ManifestProject> _projects = [];
+    private readonly List<InventoryProject> _inventory = [];
+
+    public string? InventoryPackage { get; set; }
+
+    public PackageBuilder Inventory(string project, IReadOnlyDictionary<string, string> files)
+    {
+        _inventory.Add(new InventoryProject
+        {
+            Name = project,
+            Files = [.. files.Select(f => new InventoryFile { Path = f.Key, Size = Encoding.UTF8.GetByteCount(f.Value), Sha256 = Sha256Of(f.Value) })]
+        });
+        return this;
+    }
 
     public string Directory => root.Combine("packages", name);
 
@@ -52,6 +65,12 @@ public sealed class PackageBuilder(TempDirectory root, string name = "uat_2026-0
             Created = DateTimeOffset.Now,
             Projects = _projects
         });
+        if (_inventory.Count > 0)
+        {
+            PackageJson.WriteInventory(Path.Combine(Directory, PackageInventory.FileName),
+                new PackageInventory { Package = InventoryPackage ?? name, Projects = _inventory });
+        }
+
         return DeployPackage.Load(Directory);
     }
 }

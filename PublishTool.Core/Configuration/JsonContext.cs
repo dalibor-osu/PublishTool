@@ -12,5 +12,6 @@ namespace PublishTool.Configuration;
 [JsonSerializable(typeof(FormatEnvelope))]
 [JsonSerializable(typeof(PackageManifest))]
 [JsonSerializable(typeof(ReferenceLineage))]
+[JsonSerializable(typeof(PackageInventory))]
 [JsonSerializable(typeof(DeployJournal))]
 public partial class JsonContext : JsonSerializerContext;

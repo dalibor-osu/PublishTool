@@ -91,21 +91,25 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
             return 0;
         }
 
-        if (plan.IsAllSkipped)
+        bool nothingToDeploy = plan.IsEmpty;
+        if (nothingToDeploy)
         {
-            AnsiConsole.MarkupLine("[green]No project of the package is deployed on this server, nothing to deploy.[/]");
-            return 0;
+            AnsiConsole.MarkupLine(plan.IsAllSkipped
+                ? "[green]No project of the package is deployed on this server, nothing to deploy.[/]"
+                : "[green]The package contains no changes, nothing to deploy.[/]");
+            if (!package.HasInventory)
+            {
+                return 0;
+            }
         }
-
-        if (plan.IsEmpty)
-        {
-            AnsiConsole.MarkupLine("[green]The package contains no changes, nothing to deploy.[/]");
-            return 0;
-        }
-
-        if (!await DeploySummary.AcceptAsync(plan.Warnings, $"Deploy {package.Manifest.Name}", ct))
+        else if (!await DeploySummary.AcceptAsync(plan.Warnings, $"Deploy {package.Manifest.Name}", ct))
         {
             return 1;
+        }
+
+        if (package.HasInventory && await CleanAsync(plan, store, config, nothingToDeploy, ct) is { } exitCode)
+        {
+            return exitCode;
         }
 
         AnsiConsole.Clear();
@@ -115,5 +119,26 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
         var work = runner.RunAsync(ct);
         await JobDisplayRunner.RunAsync(display, work, live: true);
         return await work == DeployOutcome.Deployed ? 0 : 1;
+    }
+
+    private static async Task<int?> CleanAsync(
+        DeployPlan plan, ConfigStore<ServerConfig> store, ServerConfig config, bool nothingToDeploy, CancellationToken ct)
+    {
+        if (!await CleanReview.RunAsync(plan, store, config, ct))
+        {
+            return 1;
+        }
+
+        if (plan.IsEmpty)
+        {
+            AnsiConsole.MarkupLine("[green]Nothing was changed.[/]");
+            return 0;
+        }
+
+        var unconfirmed = plan.Warnings.Where(w => !WarningCodes.IsClean(w.Code)).ToList();
+        bool confirmed = !nothingToDeploy
+            || unconfirmed.Count == 0
+            || await DeploySummary.AcceptAsync(unconfirmed, $"Deploy {plan.Package.Manifest.Name}", ct);
+        return confirmed ? null : 1;
     }
 }

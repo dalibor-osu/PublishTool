@@ -78,6 +78,12 @@ public sealed class DeployCliResult() : CliResult("deploy")
     public List<string> Skipped { get; set; } = [];
 
     public List<string> ExtraFiles { get; set; } = [];
+
+    public bool Clean { get; set; }
+
+    public List<string> NotCleaned { get; set; } = [];
+
+    public List<string> ProtectedConfigFiles { get; set; } = [];
 }
 
 public sealed record CliDeployTarget(
@@ -89,7 +95,10 @@ public sealed record CliDeployTarget(
     int Delete,
     string? DeployedNow,
     string? BasedOn,
-    bool IsFullPublish);
+    bool IsFullPublish,
+    bool CleanOnly = false,
+    int CleanFiles = 0,
+    int CleanDirectories = 0);
 
 public sealed class RollbackCliResult() : CliResult("rollback")
 {

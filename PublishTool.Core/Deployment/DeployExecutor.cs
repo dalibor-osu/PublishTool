@@ -19,7 +19,9 @@ public static class DeployExecutor
                 ServiceName = t.ServiceName,
                 Previous = t.Current,
                 Created = [.. t.Create],
-                CreatedDirectories = [.. t.CreatedDirectories]
+                CreatedDirectories = [.. t.CreatedDirectories],
+                CleanOnly = t.IsCleanOnly,
+                RemovedDirectories = [.. t.EmptyDirectories.Select(directory => PackagePaths.Resolve(t.TargetPath, directory))]
             })
         ]
     };
@@ -33,15 +35,17 @@ public static class DeployExecutor
 
         Directory.CreateDirectory(plan.Package.BackupDirectory);
         PackageJson.WriteJournal(plan.Package.JournalPath, journal);
-        int total = plan.Targets.Sum(t => t.Overwrite.Count + t.Delete.Count);
+        int total = plan.Targets.Sum(t => t.Overwrite.Count + t.Delete.Count + t.Stray.Count);
         int done = 0;
         foreach (var (target, journalTarget) in plan.Targets.Zip(journal.Targets))
         {
             string backupRoot = Path.Combine(plan.Package.BackupDirectory, target.Project.Name);
-            foreach (string file in target.Overwrite.Concat(target.Delete))
+            foreach (string file in target.Overwrite.Concat(target.Delete).Concat(target.Stray))
             {
                 ct.ThrowIfCancellationRequested();
-                CopyFile(PackagePaths.Resolve(target.TargetPath, file), PackagePaths.Resolve(backupRoot, file));
+                string backup = PackagePaths.Resolve(backupRoot, file);
+                CopyFile(PackagePaths.Resolve(target.TargetPath, file), backup);
+                MakeWritable(backup);
                 journalTarget.BackedUp.Add(file);
                 Progress(++done, total, "backed up", report);
             }
@@ -53,7 +57,7 @@ public static class DeployExecutor
 
     public static (int Copied, int Deleted) Apply(DeployPlan plan, Action<string> report, CancellationToken ct)
     {
-        int total = plan.Targets.Sum(t => t.Project.Files.Count + t.Delete.Count);
+        int total = plan.Targets.Sum(t => t.Project.Files.Count + t.Delete.Count + t.Stray.Count);
         int copied = 0;
         int deleted = 0;
         foreach (var target in plan.Targets)
@@ -74,9 +78,47 @@ public static class DeployExecutor
                 RemoveEmptyParents(path, target.TargetPath);
                 Progress(copied + ++deleted, total, "copied or deleted", report);
             }
+
+            foreach (string file in target.Stray)
+            {
+                ct.ThrowIfCancellationRequested();
+                string path = PackagePaths.Resolve(target.TargetPath, file);
+                MakeWritable(path);
+                File.Delete(path);
+                Progress(copied + ++deleted, total, "copied or deleted", report);
+            }
+
+            RemoveEmptyDirectories(target, report);
         }
 
         return (copied, deleted);
+    }
+
+    private static void RemoveEmptyDirectories(TargetPlan target, Action<string> report)
+    {
+        int removed = 0;
+        var stillEmpty = target.EmptyDirectories
+            .Select(directory => PackagePaths.Resolve(target.TargetPath, directory))
+            .Where(directory => Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any());
+        foreach (string directory in stillEmpty)
+        {
+            Directory.Delete(directory);
+            removed++;
+        }
+
+        if (removed > 0)
+        {
+            report($"{target.Project.Name}: {removed} empty directories removed");
+        }
+    }
+
+    private static void MakeWritable(string path)
+    {
+        var info = new FileInfo(path);
+        if (info.Exists && info.IsReadOnly)
+        {
+            info.IsReadOnly = false;
+        }
     }
 
     public static IReadOnlyList<string> Restore(string backupDirectory, DeployJournal journal, Action<string> report)
@@ -104,6 +146,11 @@ public static class DeployExecutor
                         Directory.Delete(directory);
                     }
                 });
+            }
+
+            foreach (string directory in target.RemovedDirectories)
+            {
+                Attempt(errors, directory, () => Directory.CreateDirectory(directory));
             }
 
             report($"{target.Project}: {target.BackedUp.Count} files restored, {target.Created.Count} new files removed");

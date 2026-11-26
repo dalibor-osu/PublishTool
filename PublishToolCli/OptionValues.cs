@@ -83,6 +83,40 @@ public static class OptionValues
         return true;
     }
 
+    public static bool TryAddKeep(string value, Dictionary<string, TargetOverride> overrides, out string? error)
+    {
+        if (!TrySplitKeep(value, "--keep", out string project, out string pattern, out error))
+        {
+            return false;
+        }
+
+        var target = OverrideFor(overrides, project);
+        if (!target.Keep.Contains(pattern, StringComparer.OrdinalIgnoreCase))
+        {
+            target.Keep.Add(pattern);
+        }
+
+        return true;
+    }
+
+    public static bool TryAddRemovedKeep(string value, List<KeyValuePair<string, string>> removed, out string? error)
+    {
+        if (!TrySplitKeep(value, "--remove-keep", out string project, out string pattern, out error))
+        {
+            return false;
+        }
+
+        removed.Add(new KeyValuePair<string, string>(project, pattern));
+        return true;
+    }
+
+    private static bool TrySplitKeep(string value, string option, out string project, out string pattern, out string? error)
+    {
+        pattern = string.Empty;
+        return TrySplitPair(value, option, "<project>=<pattern>", out project, out string raw, out error)
+            && KeepPatterns.TryNormalize(raw, out pattern, out error);
+    }
+
     private static TargetOverride OverrideFor(Dictionary<string, TargetOverride> overrides, string project)
     {
         string key = ServerConfig.FindKey(overrides, project) ?? project;

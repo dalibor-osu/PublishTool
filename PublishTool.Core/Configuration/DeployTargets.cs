@@ -7,6 +7,8 @@ public sealed class TargetOverride
     public string? ServiceName { get; set; }
 
     public bool ServiceSet { get; set; }
+
+    public List<string> Keep { get; } = [];
 }
 
 public sealed record TargetResolution(
@@ -48,7 +50,8 @@ public static class DeployTargets
             targets[project] = new DeployTarget
             {
                 Path = path,
-                ServiceName = string.IsNullOrWhiteSpace(service) ? null : service.Trim()
+                ServiceName = string.IsNullOrWhiteSpace(service) ? null : service.Trim(),
+                Keep = [.. (stored?.Keep ?? []).Union(change?.Keep ?? [], StringComparer.OrdinalIgnoreCase)]
             };
         }
 

@@ -48,7 +48,8 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
                 + $"'{SelfUpdate.Cli.AppName} rollback --yes -dir \"{package.Directory}\"' first; deploying again would overwrite the backup.");
         }
 
-        CheckSkipOption(package);
+        var inventory = LoadInventory(package);
+        CheckSkipOption(package, inventory);
         var store = ConfigStore.Server;
         var config = store.Load();
         var hosts = new WindowsHostController();
@@ -81,7 +82,13 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
                 $"The package does not match its manifest ({verification.Errors.Count} problem(s)), was it copied completely?");
         }
 
-        var plan =DeployPlan.Create(package, resolution.Targets, config, hosts, BuildInfo.Version, ct);
+        var plan = DeployPlan.Create(package, resolution.Targets, config, hosts, BuildInfo.Version, ct);
+        if (inventory is not null)
+        {
+            output.Line("Comparing the targets with the publish...");
+            plan.Clean(inventory, Options.Targets, Options.Skip, ct);
+        }
+
         WritePlan(output, result, plan, verification, Options.Accept);
         if (plan.Errors.Count > 0)
         {
@@ -112,6 +119,12 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
             return ExitCodes.Success;
         }
 
+        var notAccepted = WarningCodes.NotAccepted(plan.Warnings, Options.Accept);
+        if (notAccepted.Any(w => WarningCodes.IsClean(w.Code)))
+        {
+            return StopOnWarnings(output, result, notAccepted);
+        }
+
         if (plan.IsAllSkipped)
         {
             output.Line("No project of the package is deployed on this server, nothing to deploy.");
@@ -120,16 +133,15 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
 
         if (plan.IsEmpty)
         {
-            output.Line("The package contains no changes, nothing to deploy.");
+            output.Line(plan.IsCleaned
+                ? "The package contains no changes and the targets hold nothing to clean, nothing to deploy."
+                : "The package contains no changes, nothing to deploy.");
             return ExitCodes.Success;
         }
 
-        var notAccepted = WarningCodes.NotAccepted(plan.Warnings, Options.Accept);
         if (notAccepted.Count > 0)
         {
-            string codes = string.Join(",", notAccepted.Select(w => w.Code).Distinct());
-            return output.Fail(result, ExitCodes.WarningsNotAccepted,
-                $"Stopped before changing anything: {notAccepted.Count} warning(s) were not accepted. Review them and add --accept {codes} to deploy anyway");
+            return StopOnWarnings(output, result, notAccepted);
         }
 
         var steps = new LineSteps(output);
@@ -140,7 +152,8 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
         {
             case DeployOutcome.Deployed:
                 result.Changed = true;
-                output.Line($"Deployed {plan.Package.Manifest.Name} to {plan.Targets.Count} target(s).");
+                output.Line($"Deployed {plan.Package.Manifest.Name} to {plan.Targets.Count(t => !t.IsCleanOnly)} target(s)"
+                    + (plan.IsCleaned ? $", cleaned up {plan.Targets.Sum(t => t.Stray.Count)} file(s)." : "."));
                 return ExitCodes.Success;
             case DeployOutcome.RestoreFailed:
                 result.Changed = true;
@@ -153,9 +166,50 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
         }
     }
 
-    private void CheckSkipOption(DeployPackage package)
+    private static string TargetLine(TargetPlan target, bool cleaned)
     {
-        if (Options.Skip.FirstOrDefault(p => !package.Manifest.Projects.Exists(m => string.Equals(m.Name, p, StringComparison.OrdinalIgnoreCase)))
+        string host = target.ServiceName is null ? "IIS" : $"service {target.ServiceName}";
+        string clean = $"{target.Stray.Count} stray file(s) deleted, {target.EmptyDirectories.Count} empty directories removed";
+        string start = $"  {target.Project.Name} -> {target.TargetPath} ({host}): ";
+        string deployedNow = $"deployed now: {target.Current?.Package ?? "-"}";
+        if (target.IsCleanOnly)
+        {
+            return $"{start}not in the package, clean only: {clean}; {deployedNow}";
+        }
+
+        string basedOn = target.Project.IsFullPublish ? "full publish" : target.Project.Base ?? "unknown";
+        return $"{start}{target.Create.Count} new, {target.Overwrite.Count} overwritten, {target.Delete.Count} deleted; {deployedNow}; "
+            + $"based on: {basedOn}{(cleaned ? $"; clean: {clean}" : string.Empty)}";
+    }
+
+    private static int StopOnWarnings(CliOutput output, DeployCliResult result, IReadOnlyList<DeployWarning> notAccepted)
+    {
+        string codes = string.Join(",", notAccepted.Select(w => w.Code).Distinct());
+        return output.Fail(result, ExitCodes.WarningsNotAccepted,
+            $"Stopped before changing anything: {notAccepted.Count} warning(s) were not accepted. Review them and add --accept {codes} to deploy anyway");
+    }
+
+    private PackageInventory? LoadInventory(DeployPackage package)
+    {
+        string? kept = Options.Targets.Where(t => t.Value.Keep.Count > 0).Select(t => t.Key).FirstOrDefault();
+        if (!Options.Clean)
+        {
+            return kept is null ? null : throw new CliArgumentException("--keep needs --clean");
+        }
+
+        var inventory = package.LoadInventory();
+        if (Options.Targets.Where(t => t.Value.Keep.Count > 0).Select(t => t.Key).FirstOrDefault(p => inventory.Find(p) is null) is { } unknown)
+        {
+            throw new CliArgumentException($"--keep {unknown}=<pattern>: the package has no project {unknown}");
+        }
+
+        return inventory;
+    }
+
+    private void CheckSkipOption(DeployPackage package, PackageInventory? inventory)
+    {
+        if (Options.Skip.FirstOrDefault(p => inventory?.Find(p) is null
+                && !package.Manifest.Projects.Exists(m => string.Equals(m.Name, p, StringComparison.OrdinalIgnoreCase)))
             is { } unknown)
         {
             throw new CliArgumentException($"--skip {unknown}: the package has no project {unknown}");
@@ -163,7 +217,7 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
 
         if (Options.Skip.FirstOrDefault(Options.Targets.ContainsKey) is { } conflict)
         {
-            throw new CliArgumentException($"{conflict} cannot be given with both --skip and --target/--service");
+            throw new CliArgumentException($"{conflict} cannot be given with both --skip and --target/--service/--keep");
         }
     }
 
@@ -175,17 +229,29 @@ public class DeployCommand(DeployCommandOptions options) : ICommand<DeployComman
             + $"{manifest.ToolVersion}, deployed by {SelfUpdate.Cli.AppName} {BuildInfo.Version}");
         foreach (var target in plan.Targets)
         {
-            string host = target.ServiceName is null ? "IIS" : $"service {target.ServiceName}";
-            string basedOn = target.Project.IsFullPublish ? "full publish" : target.Project.Base ?? "unknown";
-            output.Line($"  {target.Project.Name} -> {target.TargetPath} ({host}): {target.Create.Count} new, {target.Overwrite.Count} overwritten, "
-                + $"{target.Delete.Count} deleted; deployed now: {target.Current?.Package ?? "-"}; based on: {basedOn}");
+            output.Line(TargetLine(target, plan.IsCleaned));
             result.Targets.Add(new CliDeployTarget(target.Project.Name, target.TargetPath, target.ServiceName, target.Create.Count,
-                target.Overwrite.Count, target.Delete.Count, target.Current?.Package, target.Project.Base, target.Project.IsFullPublish));
+                target.Overwrite.Count, target.Delete.Count, target.Current?.Package, target.Project.Base, target.Project.IsFullPublish,
+                target.IsCleanOnly, target.Stray.Count, target.EmptyDirectories.Count));
         }
 
         if (plan.Package.SkippedProjects.Count > 0)
         {
             output.Line($"  Not deployed on this server: {string.Join(", ", plan.Package.SkippedProjects)}");
+        }
+
+        result.Clean = plan.IsCleaned;
+        result.NotCleaned = [.. plan.NotCleaned];
+        result.ProtectedConfigFiles = [.. plan.ProtectedConfigFiles];
+        if (plan.NotCleaned.Count > 0)
+        {
+            output.Line($"  Not cleaned, no target on this server: {string.Join(", ", plan.NotCleaned)}");
+        }
+
+        if (plan.ProtectedConfigFiles.Count > 0)
+        {
+            output.Line($"{plan.ProtectedConfigFiles.Count} config file(s) on the targets are not part of the publish and are kept: "
+                + DeployWarning.ListFiles(plan.ProtectedConfigFiles));
         }
 
         if (verification.ExtraFiles.Count > 0)
