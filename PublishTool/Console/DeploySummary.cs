@@ -28,6 +28,12 @@ internal static class DeploySummary
         }
 
         AnsiConsole.Write(table);
+        if (plan.Package.SkippedProjects.Count > 0)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"Not deployed on this server: [grey]{string.Join(", ", plan.Package.SkippedProjects)}[/]");
+        }
+
         if (verification.ExtraFiles.Count > 0)
         {
             AnsiConsole.MarkupLineInterpolated(

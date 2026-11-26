@@ -75,6 +75,8 @@ public sealed class DeployCliResult() : CliResult("deploy")
 
     public List<CliDeployTarget> Targets { get; set; } = [];
 
+    public List<string> Skipped { get; set; } = [];
+
     public List<string> ExtraFiles { get; set; } = [];
 }
 
@@ -119,6 +121,8 @@ public sealed class ConfigCliResult() : CliResult("config")
     public string? Prefix { get; set; }
 
     public Dictionary<string, DeployTarget>? Targets { get; set; }
+
+    public List<string>? Skipped { get; set; }
 
     public bool Changed { get; set; }
 }

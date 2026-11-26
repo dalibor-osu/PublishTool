@@ -55,11 +55,30 @@ public sealed class DeployEnvironment
 {
     public Dictionary<string, DeployTarget> Targets { get; set; } = [];
 
+    public List<string> Skipped { get; set; } = [];
+
     public DeployTarget? TargetFor(string project)
     {
         string? key = ServerConfig.FindKey(Targets, project);
         return key is null ? null : Targets[key];
     }
+
+    public bool IsSkipped(string project) => Skipped.Exists(p => string.Equals(p, project, StringComparison.OrdinalIgnoreCase));
+
+    public void Skip(string project)
+    {
+        if (ServerConfig.FindKey(Targets, project) is { } key)
+        {
+            Targets.Remove(key);
+        }
+
+        if (!IsSkipped(project))
+        {
+            Skipped.Add(project);
+        }
+    }
+
+    public bool Unskip(string project) => Skipped.RemoveAll(p => string.Equals(p, project, StringComparison.OrdinalIgnoreCase)) > 0;
 }
 
 public sealed class DeployTarget

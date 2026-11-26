@@ -9,7 +9,10 @@ public sealed class TargetOverride
     public bool ServiceSet { get; set; }
 }
 
-public sealed record TargetResolution(IReadOnlyDictionary<string, DeployTarget> Targets, IReadOnlyList<string> Missing);
+public sealed record TargetResolution(
+    IReadOnlyDictionary<string, DeployTarget> Targets,
+    IReadOnlyList<string> Missing,
+    IReadOnlyList<string> Skipped);
 
 public static class DeployTargets
 {
@@ -17,15 +20,23 @@ public static class DeployTargets
         ServerConfig config,
         string prefix,
         IReadOnlyList<string> projects,
-        IReadOnlyDictionary<string, TargetOverride>? overrides = null)
+        IReadOnlyDictionary<string, TargetOverride>? overrides = null,
+        IReadOnlyCollection<string>? skip = null)
     {
         var environment = config.FindEnvironment(prefix);
         var targets = new Dictionary<string, DeployTarget>(StringComparer.OrdinalIgnoreCase);
         var missing = new List<string>();
+        var skipped = new List<string>();
         foreach (string project in projects)
         {
             var stored = environment?.TargetFor(project);
             var change = FindOverride(overrides, project);
+            if (IsSkipped(project, skip, environment, change))
+            {
+                skipped.Add(project);
+                continue;
+            }
+
             string? path = change?.Path ?? stored?.Path;
             string? service = change is { ServiceSet: true } ? change.ServiceName : stored?.ServiceName;
             if (string.IsNullOrWhiteSpace(path))
@@ -41,8 +52,12 @@ public static class DeployTargets
             };
         }
 
-        return new TargetResolution(targets, missing);
+        return new TargetResolution(targets, missing, skipped);
     }
+
+    private static bool IsSkipped(string project, IReadOnlyCollection<string>? skip, DeployEnvironment? environment, TargetOverride? change) =>
+        skip?.Contains(project, StringComparer.OrdinalIgnoreCase) == true
+        || (change?.Path is null && environment?.IsSkipped(project) == true);
 
     public static bool TryNormalizePath(string value, out string normalized)
     {

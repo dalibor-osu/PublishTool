@@ -36,7 +36,7 @@ public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigComman
 
         if (Options.ChangesTargets)
         {
-            throw new CliArgumentException("--target, --service and --remove-target need --prefix <package prefix>");
+            throw new CliArgumentException("--target, --service, --remove-target, --skip and --remove-skip need --prefix <package prefix>");
         }
 
         return RunDirectory(output, result);
@@ -150,10 +150,12 @@ public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigComman
             result.Changed = true;
         }
 
-        var targets = config.FindEnvironment(prefix)?.Targets ?? [];
+        var environment = config.FindEnvironment(prefix);
+        var targets = environment?.Targets ?? [];
         result.Targets = targets;
+        result.Skipped = [.. environment?.Skipped ?? []];
         output.Line($"{(result.Changed ? "Saved deploy targets" : "Deploy targets")} of packages with prefix {prefix} ({store.Path}):");
-        if (targets.Count == 0)
+        if (targets.Count == 0 && result.Skipped.Count == 0)
         {
             output.Line("  (none)");
         }
@@ -163,11 +165,17 @@ public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigComman
             output.Line($"  {project}: {target.Path ?? NotSet}, {(target.ServiceName is null ? "IIS" : $"service {target.ServiceName}")}");
         }
 
+        foreach (string project in result.Skipped.Order(StringComparer.OrdinalIgnoreCase))
+        {
+            output.Line($"  {project}: not deployed on this server");
+        }
+
         return ExitCodes.Success;
     }
 
     private void ApplyTargetChanges(DeployEnvironment environment)
     {
+        CheckSkipConflicts(environment);
         var removed = Options.RemoveTargets
             .Select(project => ServerConfig.FindKey(environment.Targets, project)
                 ?? throw new CliArgumentException($"{project} has no target to remove"))
@@ -181,9 +189,34 @@ public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigComman
             environment.Targets.Remove(key);
         }
 
+        foreach (string project in Options.RemoveSkip)
+        {
+            environment.Unskip(project);
+        }
+
+        foreach (string project in Options.Skip)
+        {
+            environment.Skip(project);
+        }
+
         foreach (var (key, target) in updated)
         {
+            environment.Unskip(key);
             environment.Targets[key] = target;
+        }
+    }
+
+    private void CheckSkipConflicts(DeployEnvironment environment)
+    {
+        if (Options.Skip.FirstOrDefault(p => Options.Targets.ContainsKey(p) || Options.RemoveSkip.Contains(p, StringComparer.OrdinalIgnoreCase))
+            is { } conflict)
+        {
+            throw new CliArgumentException($"{conflict} cannot be skipped and given a target or un-skipped in the same run");
+        }
+
+        if (Options.RemoveSkip.FirstOrDefault(p => !environment.IsSkipped(p)) is { } notSkipped)
+        {
+            throw new CliArgumentException($"{notSkipped} is not skipped");
         }
     }
 

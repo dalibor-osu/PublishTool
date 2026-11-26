@@ -45,6 +45,14 @@ public static class OptionValues
         return true;
     }
 
+    public static bool TryAddProjects(string value, string option, List<string> projects, out string? error)
+    {
+        string[] names = SplitList(value);
+        projects.AddRange(names);
+        error = names.Length == 0 ? $"{option} needs a project name" : null;
+        return error is null;
+    }
+
     public static bool TryAddTarget(string value, Dictionary<string, TargetOverride> overrides, out string? error)
     {
         if (!TrySplitPair(value, "--target", "<project>=<absolute path>", out string project, out string path, out error))

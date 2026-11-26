@@ -62,7 +62,7 @@ PublishTool.Core/                 Shared library (net11.0, IsAotCompatible, no S
     Migrations/ConfigV1ToV2.cs    Migrator 1 -> 2 (merges the dictionaries per directory)
     ServerConfig.cs               Server settings (own format version): Environments per prefix + Deployed records per path
     ServerConfigVersions.cs       Registry of the server settings file (parsers, migrators), separate from ConfigVersions
-    DeployTargets.cs              Resolve(config, prefix, projects, overrides): targets + missing, never mutates the config
+    DeployTargets.cs              Resolve(config, prefix, projects, overrides, skip): targets + missing + skipped, never mutates the config
   Deployment/                     Package manifest, lineage and everything deploy and rollback do
     PackageManifest.cs / ReferenceLineage.cs / PackageJson.cs / PackagePaths.cs / DeployPackage.cs / DeployJournal.cs
     DeployPlan.cs                 Per target: files to create / overwrite / delete, coded warnings, errors
@@ -87,7 +87,7 @@ PublishTool/                      The TUI exe (PublishAot, InvariantGlobalizatio
     ConfigCommand.cs              Forces the interactive config wizard for a directory
     UpdateCommand.cs / VersionCommand.cs / HelpCommand.cs
   Configuration/ConfigHandler.cs  Load(workingDir) = load file + wizard for missing settings, returns the DirectorySettings
-  Configuration/ServerConfigHandler.cs   ResolveTargets: wizard for missing target paths / service names of a prefix
+  Configuration/ServerConfigHandler.cs   ResolveTargets: wizard for missing target paths / service names / skips of a prefix
   Console/JobDisplay.cs           JobRow (an IStep) / JobDisplay (an IStepList): the redrawn progress table
   Console/JobDisplayRunner.cs     Redraw loop for a JobDisplay while work runs
   Console/DeploySummary.cs        Summary table, warnings/errors and the accept/confirm prompt of deploy and rollback
@@ -118,7 +118,8 @@ docs/impl/                        Implementation notes per spec
 which prefixes are accepted, config migration, deploy planning and its warning codes (including `config-changed`
 and `target-modified` with their file lists),
 backup/apply/restore, the deploy and rollback runners (with `FakeHostController` and a sandboxed
-`ConfigStore<ServerConfig>`, no administrator rights), change collection and lineage, target and settings overrides
+`ConfigStore<ServerConfig>`, no administrator rights), change collection and lineage, skipped projects (resolution,
+filtered verification and plan), target and settings overrides
 (including that overrides never change the stored config), self-update asset names and the CLI option parsing.
 Tests never use `ConfigStore.Default` or `ConfigStore.Server`, which point at the real config of the machine.
 
@@ -264,14 +265,20 @@ so `auto` bump works.
 - **Server config**: `%ProgramData%\PublishTool\server.json` (machine-wide, written by elevated deploys),
   model `ServerConfig`, own registry `ServerConfigVersions` and store `ConfigStore.Server`, same versioning
   machinery and recipe as `config.json` but its own version number. `Environments` maps a package prefix to
-  `Targets` (project name -> `Path`, optional `ServiceName`; no service name means an IIS app); `Deployed`
-  maps an absolute target path to the last package deployed there. Lookups are case-insensitive
-  (`ServerConfig.FindKey`). `DeployTargets.Resolve` merges per-run `TargetOverride`s (CLI `--target`/`--service`)
-  over the stored targets into new objects and reports projects without a path; it never adds an environment or a
-  target to the config, so a deploy with overrides only writes its `Deployed` records and journal. Missing targets
-  are asked for by the TUI's `ServerConfigHandler.ResolveTargets` (absolute path, service must exist on the machine)
-  and stored; the CLI fails with exit 2 instead. `PublishToolCli config --prefix <p>` shows, sets, changes and removes
-  targets (`--target`, `--service`, `--remove-target`); writing `server.json` usually needs an elevated terminal.
+  `Targets` (project name -> `Path`, optional `ServiceName`; no service name means an IIS app) and `Skipped`
+  (projects of the prefix that are not deployed on this server, because one publish feeds several servers);
+  `Deployed` maps an absolute target path to the last package deployed there. Lookups are case-insensitive
+  (`ServerConfig.FindKey`). A project is either mapped or skipped: `DeployEnvironment.Skip` removes its target,
+  setting a target un-skips it. `Skipped` was added without a format version bump (older files read it as empty),
+  but an older PublishTool that saves `server.json` drops it. `DeployTargets.Resolve` merges per-run
+  `TargetOverride`s (CLI `--target`/`--service`) and per-run skips (CLI `deploy --skip`) over the stored targets
+  into new objects and reports projects without a path (`Missing`) and skipped ones (`Skipped`; a per-run target
+  path un-skips a stored skip for that run); it never adds an environment or a target to the config, so a deploy
+  with overrides only writes its `Deployed` records and journal. Missing targets are asked for by the TUI's
+  `ServerConfigHandler.ResolveTargets` (first "is it deployed on this server?", then absolute path and service,
+  which must exist on the machine) and stored; the CLI fails with exit 2 instead. `PublishToolCli config --prefix <p>`
+  shows, sets, changes and removes targets and skips (`--target`, `--service`, `--remove-target`, `--skip`,
+  `--remove-skip`); writing `server.json` usually needs an elevated terminal.
 - **Config format versions**: the file carries `Version` (files without it are version 1). `ConfigStore`
   reads the version, parses with that version's `ConfigParser`, runs the `ConfigMigrator` chain step by step
   to `ConfigVersions.Current`, then backs the old file up as `config.v<N>.json.bak` and saves the upgraded
@@ -396,8 +403,11 @@ outside the package or target.
 
 `deploy -dir <package>` preflight, nothing changes on the server: admin check (unless a dry run), refuse if
 `<package>\.backup` exists (deployed before or interrupted, run `rollback` first; not checked in a dry run), load the
-manifest (missing or newer format is refused), verify every file's size and SHA-256, resolve the targets of the
-manifest's prefix, build the `DeployPlan`. Errors stop it: two projects mapped to one path, a missing service, IIS
+manifest (missing or newer format is refused), resolve the targets of the manifest's prefix, leave the skipped
+projects out (`DeployPackage.WithoutProjects`: a filtered manifest copy, so verification, plan, journal and records
+never see them, and their directories, copied or not, are neither verified nor reported as extra files), verify
+every remaining file's size and SHA-256, build the `DeployPlan`. Skipped projects are listed in the summary; when
+every project is skipped (`DeployPlan.IsAllSkipped`) there is nothing to deploy and it exits 0. Errors stop it: two projects mapped to one path, a missing service, IIS
 targets without IIS. Warnings carry codes (see `WarningCodes`): the package was made by another PublishTool version
 (exact string match with `BuildInfo.Version`, `tool-version`), a target directory does not exist (`target-missing`),
 and the chain check per target: the target's `Deployed` record must equal the project's `Base`; an unknown base
@@ -417,12 +427,15 @@ and the chain check per target: the target's `Deployed` record must equal the pr
 
 Both checks hash in the preflight, before the backup, also in a dry run.
 
-- **TUI** (`PublishTool deploy`): asks for missing targets in a wizard and stores them, shows the summary, asks to
-  accept warnings (default no) or to confirm; `--dry-run` stops after the summary.
+- **TUI** (`PublishTool deploy`): asks for missing targets (or whether the project is deployed on this server at all)
+  in a wizard and stores them, shows the summary, asks to accept warnings (default no) or to confirm; `--dry-run`
+  stops after the summary.
 - **CLI** (`PublishToolCli deploy`): without `--yes` (or with `--dry-run`) it is a dry run: verify, print the plan and
   the warnings (with `accepted` flags), exit 0. Missing targets are exit 2 (pass `--target <project>=<path>` and
-  `--service <project>=<name>` for this run, or store them with `config --prefix`). With `--yes`: an empty plan exits
-  0, any warning whose code is not in `--accept` stops with exit 3 before anything changes, otherwise it runs.
+  `--service <project>=<name>`, or `--skip <project>`, for this run, or store them with `config --prefix`); `--skip`
+  of a project the package does not contain, or together with `--target`/`--service` for the same project, is exit 2.
+  The JSON lists skipped projects in `skipped`. With `--yes`: an empty plan exits 0, any warning whose code is not
+  in `--accept` stops with exit 3 before anything changes, otherwise it runs.
 
 `DeployRunner` steps: backup (overwritten and deleted files into `<package>\.backup\<Project>\...`, journal
 `journal.json` written before and after, state `BackingUp`), stop (journal state `Applying` with the hosts that
@@ -462,12 +475,13 @@ PublishToolCli <command> [options]           non-interactive CLI, never prompts
   publish   -dir <path>  -p|--projects <a,b>  -c|--configuration Release|Debug  -l|--local
             --publish-dir <path>  --shared-dir <path>  --deploy-dir <path>  --ignore <dirs>  --json  --verbose
   deploy    -dir <package dir>  -y|--yes  --dry-run  --accept <codes>
-            --target <project=path>...  --service <project=name>...  --json  --verbose    (server; --yes needs elevation)
+            --target <project=path>...  --service <project=name>...  --skip <projects>...
+            --json  --verbose                                                    (server; --yes needs elevation)
   rollback  -dir <package dir>  -y|--yes  --accept newer-deploy  --json  --verbose   (server; --yes needs elevation)
   config    -dir <path>  [--publish-dir|--shared-dir|--deploy-dir <path>]  [--ignore|--publishable <list>]
             [--unset <keys>]  --json
   config    --prefix <prefix>  [--target <project=path>]...  [--service <project=name>]...
-            [--remove-target <project>]...  --json
+            [--remove-target <project>]...  [--skip <projects>]...  [--remove-skip <projects>]...  --json
   update    -pre|--pre-release  --fetch  -v|--version <version>  --accept downgrade  --json
   version   --json
   -h, --help  on every command; PublishToolCli --help also lists the exit and warning codes
@@ -489,8 +503,11 @@ PublishToolCli <command> [options]           non-interactive CLI, never prompts
 3. **Deploy**: after a publish without `--local`, copy `<deploy dir>\<branch>_<timestamp>` to the server; it
    contains only the files that differ from the previous publish of the same branch plus the manifest. On the
    server, in an elevated terminal, run `PublishTool deploy -dir <package>`. The first package of a prefix asks
-   for each project's target directory and Windows service name (empty for IIS apps), stored in
-   `%ProgramData%\PublishTool\server.json`. Review the summary and warnings, confirm, and watch the rows.
+   for each project whether it is deployed on this server, and if so for its target directory and Windows service
+   name (empty for IIS apps), stored in `%ProgramData%\PublishTool\server.json`. When the projects of one publish
+   live on several servers, copy only the project directories a server needs plus the manifest; the projects
+   answered "no" are left out there (CLI: `PublishToolCli config --prefix <p> --skip Api,Worker`, undo with
+   `--remove-skip` or by setting a `--target`). Review the summary and warnings, confirm, and watch the rows.
    Unattended: `PublishToolCli deploy -dir <package>` (dry run, review the warnings), then
    `PublishToolCli deploy -dir <package> --yes --accept <codes you reviewed>`. Deploy packages of a branch in order;
    the tool warns when one was skipped. Config files are deployed like any other file, so the app itself must ship

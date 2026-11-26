@@ -47,6 +47,15 @@ public class ConfigCommandOptions
         Description = "With --prefix: remove the target of a project; repeat for more projects")]
     public List<string> RemoveTargets { get; set; } = [];
 
+    [Option("--skip", Parser = nameof(ParseSkip), ValueName = "projects",
+        Description = "With --prefix: comma separated projects that are not deployed on this server; deploy leaves them out and their "
+        + "targets are removed; repeatable")]
+    public List<string> Skip { get; set; } = [];
+
+    [Option("--remove-skip", Parser = nameof(ParseRemoveSkip), ValueName = "projects",
+        Description = "With --prefix: comma separated projects that are deployed on this server again (--target also does this); repeatable")]
+    public List<string> RemoveSkip { get; set; } = [];
+
     [Option("--json", Description = "Print one JSON result object on stdout")]
     public bool Json { get; set; } = false;
 
@@ -54,7 +63,7 @@ public class ConfigCommandOptions
         PublishDirectory is not null || SharedDirectory is not null || DeployDirectory is not null || IgnoredDirectories is not null
         || PublishableProjects is not null || Unset.Count > 0;
 
-    public bool ChangesTargets => Targets.Count > 0 || RemoveTargets.Count > 0;
+    public bool ChangesTargets => Targets.Count > 0 || RemoveTargets.Count > 0 || Skip.Count > 0 || RemoveSkip.Count > 0;
 
     internal static bool ParseWorkingDirectory(string value, ConfigCommandOptions options, out string? error)
     {
@@ -127,10 +136,12 @@ public class ConfigCommandOptions
     internal static bool ParseService(string value, ConfigCommandOptions options, out string? error) =>
         OptionValues.TryAddService(value, options.Targets, out error);
 
-    internal static bool ParseRemoveTarget(string value, ConfigCommandOptions options, out string? error)
-    {
-        options.RemoveTargets.AddRange(OptionValues.SplitList(value));
-        error = options.RemoveTargets.Count == 0 ? "--remove-target needs a project name" : null;
-        return error is null;
-    }
+    internal static bool ParseRemoveTarget(string value, ConfigCommandOptions options, out string? error) =>
+        OptionValues.TryAddProjects(value, "--remove-target", options.RemoveTargets, out error);
+
+    internal static bool ParseSkip(string value, ConfigCommandOptions options, out string? error) =>
+        OptionValues.TryAddProjects(value, "--skip", options.Skip, out error);
+
+    internal static bool ParseRemoveSkip(string value, ConfigCommandOptions options, out string? error) =>
+        OptionValues.TryAddProjects(value, "--remove-skip", options.RemoveSkip, out error);
 }
