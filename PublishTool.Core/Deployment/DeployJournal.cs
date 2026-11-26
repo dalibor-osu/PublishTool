@@ -49,4 +49,8 @@ public sealed class JournalTarget
     public List<string> Created { get; set; } = [];
 
     public List<string> CreatedDirectories { get; set; } = [];
+
+    public bool CleanOnly { get; set; }
+
+    public List<string> RemovedDirectories { get; set; } = [];
 }

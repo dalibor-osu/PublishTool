@@ -22,11 +22,27 @@ public sealed class TargetPlan
     public List<string> Delete { get; } = [];
 
     public List<string> CreatedDirectories { get; } = [];
+
+    public bool IsCleanOnly { get; init; }
+
+    public List<string> Stray { get; } = [];
+
+    public List<string> EmptyDirectories { get; } = [];
+
+    public bool HasChanges => Project.Files.Count > 0 || Delete.Count > 0 || Stray.Count > 0 || EmptyDirectories.Count > 0;
 }
 
 public sealed class DeployPlan
 {
-    private DeployPlan(DeployPackage package) => Package = package;
+    private readonly ServerConfig _config;
+    private readonly IHostController _hosts;
+
+    private DeployPlan(DeployPackage package, ServerConfig config, IHostController hosts)
+    {
+        Package = package;
+        _config = config;
+        _hosts = hosts;
+    }
 
     public DeployPackage Package { get; }
 
@@ -36,7 +52,13 @@ public sealed class DeployPlan
 
     public List<string> Errors { get; } = [];
 
-    public bool IsEmpty => Targets.TrueForAll(t => t.Project.Files.Count == 0 && t.Delete.Count == 0);
+    public bool IsCleaned { get; private set; }
+
+    public List<string> ProtectedConfigFiles { get; } = [];
+
+    public List<string> NotCleaned { get; } = [];
+
+    public bool IsEmpty => Targets.TrueForAll(t => !t.HasChanges);
 
     public bool IsAllSkipped => Targets.Count == 0 && Package.SkippedProjects.Count > 0;
 
@@ -48,7 +70,7 @@ public sealed class DeployPlan
         string toolVersion,
         CancellationToken ct)
     {
-        var plan = new DeployPlan(package);
+        var plan = new DeployPlan(package, config, hosts);
         var manifest = package.Manifest;
         if (!string.Equals(manifest.ToolVersion, toolVersion, StringComparison.Ordinal))
         {
@@ -58,15 +80,7 @@ public sealed class DeployPlan
 
         foreach (var project in manifest.Projects)
         {
-            var mapping = mappings[project.Name];
-            string targetPath = PackagePaths.NormalizeDirectory(mapping.Path!);
-            var target = new TargetPlan
-            {
-                Project = project,
-                TargetPath = targetPath,
-                ServiceName = string.IsNullOrWhiteSpace(mapping.ServiceName) ? null : mapping.ServiceName.Trim(),
-                Current = config.RecordFor(targetPath)
-            };
+            var target = plan.NewTarget(project, mappings[project.Name], cleanOnly: false);
             plan.FillFiles(target);
             plan.CheckChain(target);
             plan.CheckConfigFiles(target);
@@ -74,8 +88,126 @@ public sealed class DeployPlan
             plan.Targets.Add(target);
         }
 
-        plan.CheckTargets(hosts);
+        plan.CheckTargets();
         return plan;
+    }
+
+    public void Clean(
+        PackageInventory inventory,
+        IReadOnlyDictionary<string, TargetOverride>? overrides,
+        IReadOnlyCollection<string>? skip,
+        CancellationToken ct)
+    {
+        ResetClean();
+        IsCleaned = true;
+        if (Targets.Find(t => inventory.Find(t.Project.Name) is null) is { } unlisted)
+        {
+            throw new DeployException(
+                $"{PackageInventory.FileName} does not list the project {unlisted.Project.Name} of the package, so the targets cannot be cleaned.");
+        }
+
+        string[] projects =
+        [
+            .. inventory.Projects.Select(p => p.Name).Where(p => !Package.SkippedProjects.Contains(p, StringComparer.OrdinalIgnoreCase))
+        ];
+        var resolution = DeployTargets.Resolve(_config, Package.Manifest.Prefix, projects, overrides, skip);
+        NotCleaned.AddRange(resolution.Missing);
+        string[] protectedDirectories = [.. ProtectedDirectories(resolution)];
+        foreach (var listed in inventory.Projects)
+        {
+            if (!resolution.Targets.TryGetValue(listed.Name, out var mapping))
+            {
+                continue;
+            }
+
+            var target = FindTarget(listed.Name) ?? NewTarget(new ManifestProject { Name = listed.Name }, mapping, cleanOnly: true);
+            var findings = TargetCleaner.Scan(target, listed, mapping.Keep, protectedDirectories, ct);
+            target.Stray.AddRange(findings.Stray);
+            target.EmptyDirectories.AddRange(findings.EmptyDirectories);
+            ProtectedConfigFiles.AddRange(findings.ProtectedConfigFiles.Select(file => $"{listed.Name}/{file}"));
+            AddCleanWarnings(target, findings);
+            if (target.IsCleanOnly && target.HasChanges)
+            {
+                Targets.Add(target);
+            }
+        }
+
+        Errors.Clear();
+        CheckTargets();
+    }
+
+    public void ResetClean()
+    {
+        IsCleaned = false;
+        Targets.RemoveAll(t => t.IsCleanOnly);
+        foreach (var target in Targets)
+        {
+            target.Stray.Clear();
+            target.EmptyDirectories.Clear();
+        }
+
+        Warnings.RemoveAll(w => WarningCodes.IsClean(w.Code));
+        ProtectedConfigFiles.Clear();
+        NotCleaned.Clear();
+        Errors.Clear();
+        CheckTargets();
+    }
+
+    private TargetPlan? FindTarget(string project) =>
+        Targets.Find(t => string.Equals(t.Project.Name, project, StringComparison.OrdinalIgnoreCase));
+
+    private TargetPlan NewTarget(ManifestProject project, DeployTarget mapping, bool cleanOnly)
+    {
+        string targetPath = PackagePaths.NormalizeDirectory(mapping.Path!);
+        return new TargetPlan
+        {
+            Project = project,
+            TargetPath = targetPath,
+            ServiceName = string.IsNullOrWhiteSpace(mapping.ServiceName) ? null : mapping.ServiceName.Trim(),
+            Current = _config.RecordFor(targetPath),
+            IsCleanOnly = cleanOnly
+        };
+    }
+
+    private IEnumerable<string> ProtectedDirectories(TargetResolution resolution) =>
+        _config.Environments.Values
+            .SelectMany(environment => environment.Targets.Values)
+            .Concat(resolution.Targets.Values)
+            .Select(target => target.Path)
+            .OfType<string>()
+            .Where(path => Path.IsPathFullyQualified(path))
+            .Concat(Targets.Select(target => target.TargetPath))
+            .Append(Package.Directory);
+
+    private void AddCleanWarnings(TargetPlan target, CleanFindings findings)
+    {
+        string name = target.Project.Name;
+        if (findings.Stray.Count + findings.EmptyDirectories.Count > 0)
+        {
+            List<string> files = [.. findings.Stray, .. findings.EmptyDirectories.Select(directory => $"{directory}/")];
+            Warnings.Add(new DeployWarning(WarningCodes.CleanDelete,
+                $"{name}: cleaning {target.TargetPath} deletes {findings.Stray.Count} file(s) that are not part of the publish and removes "
+                + $"{findings.EmptyDirectories.Count} empty directories: {DeployWarning.ListFiles(files)}.",
+                files));
+        }
+
+        if (findings.Mismatched.Count + findings.Unreadable.Count > 0)
+        {
+            List<string> files = [.. findings.Mismatched, .. findings.Unreadable];
+            List<string> listed = [.. findings.Mismatched, .. findings.Unreadable.Select(file => $"{file} (could not be read)")];
+            Warnings.Add(new DeployWarning(WarningCodes.CleanMismatch,
+                $"{name}: {files.Count} file(s) in {target.TargetPath} differ from the publish; the package does not contain them, so they stay "
+                + $"as they are: {DeployWarning.ListFiles(listed)}.",
+                files));
+        }
+
+        if (findings.Missing.Count > 0)
+        {
+            Warnings.Add(new DeployWarning(WarningCodes.CleanMissing,
+                $"{name}: {findings.Missing.Count} file(s) of the publish are missing in {target.TargetPath} and the package does not contain "
+                + $"them: {DeployWarning.ListFiles(findings.Missing)}.",
+                findings.Missing));
+        }
     }
 
     private void FillFiles(TargetPlan target)
@@ -225,14 +357,14 @@ public sealed class DeployPlan
         }
     }
 
-    private void CheckTargets(IHostController hosts)
+    private void CheckTargets()
     {
         foreach (var group in Targets.GroupBy(t => t.TargetPath, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
         {
             Errors.Add($"The projects {string.Join(", ", group.Select(t => t.Project.Name))} are all mapped to {group.Key}.");
         }
 
-        if (Targets.Exists(t => t.IsIis) && !hosts.IsIisInstalled())
+        if (Targets.Exists(t => t.IsIis) && !_hosts.IsIisInstalled())
         {
             Errors.Add("Some targets are IIS apps, but IIS (the W3SVC service) is not installed on this machine.");
         }
@@ -241,7 +373,7 @@ public sealed class DeployPlan
             .Select(t => t.ServiceName)
             .OfType<string>()
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(service => !hosts.ServiceExists(service));
+            .Where(service => !_hosts.ServiceExists(service));
         foreach (string service in missingServices)
         {
             Errors.Add($"The Windows service {service} does not exist on this machine.");

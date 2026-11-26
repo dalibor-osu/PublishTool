@@ -49,7 +49,7 @@ public sealed class DeployRunner
         _backupRow = steps.Add($"Backing up the files that will be overwritten or deleted into {plan.Package.BackupDirectory}");
         _stopRow = steps.Add("Stopping IIS and the services of the targets");
         _applyRow = steps.Add(
-            $"Copying {plan.Targets.Sum(t => t.Project.Files.Count)} files and deleting {plan.Targets.Sum(t => t.Delete.Count)} files");
+            $"Copying {plan.Targets.Sum(t => t.Project.Files.Count)} files and deleting {plan.Targets.Sum(t => t.Delete.Count + t.Stray.Count)} files");
         _startRow = steps.Add("Starting IIS and the services again");
         _recordRow = steps.Add($"Recording the deploy in {store.Path}");
         _restoreRow = steps.Add("Restoring the backup (only after a failure)");
@@ -156,7 +156,8 @@ public sealed class DeployRunner
         _recordRow.Start();
         var time = DateTimeOffset.Now;
         _recorded = true;
-        foreach (var target in _plan.Targets)
+        var deployed = _plan.Targets.Where(t => !t.IsCleanOnly).ToList();
+        foreach (var target in deployed)
         {
             _config.SetRecord(target.TargetPath, new DeployRecord { Package = _plan.Package.Manifest.Name, Time = time });
         }
@@ -164,7 +165,7 @@ public sealed class DeployRunner
         _store.Save(_config);
         journal.State = JournalState.Deployed;
         PackageJson.WriteJournal(_plan.Package.JournalPath, journal);
-        _recordRow.Finish(StepState.Succeeded, $"{_plan.Targets.Count} target(s) are at {_plan.Package.Manifest.Name}");
+        _recordRow.Finish(StepState.Succeeded, $"{deployed.Count} target(s) are at {_plan.Package.Manifest.Name}");
     }
 
     private void FinishAfterFailure(Exception e)
@@ -260,7 +261,7 @@ public sealed class DeployRunner
     {
         try
         {
-            foreach (var target in journal.Targets)
+            foreach (var target in journal.Targets.Where(t => !t.CleanOnly))
             {
                 _config.SetRecord(target.Path, target.Previous);
             }

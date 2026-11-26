@@ -86,6 +86,21 @@ public sealed class DeployTarget
     public string? Path { get; set; }
 
     public string? ServiceName { get; set; }
+
+    public List<string> Keep { get; set; } = [];
+
+    public bool AddKeep(string pattern)
+    {
+        if (Keep.Exists(p => string.Equals(p, pattern, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        Keep.Add(pattern);
+        return true;
+    }
+
+    public bool RemoveKeep(string pattern) => Keep.RemoveAll(p => string.Equals(p, pattern, StringComparison.OrdinalIgnoreCase)) > 0;
 }
 
 public sealed class DeployRecord

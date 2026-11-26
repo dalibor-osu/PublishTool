@@ -152,11 +152,15 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
     {
         Directory.CreateDirectory(deployDirectory);
         var previousLineage = previous is null ? null : PackageJson.TryReadLineage(Path.Combine(previous, ReferenceLineage.FileName));
+        var previousInventory = previous is null ? null : PackageJson.TryReadInventory(Path.Combine(previous, PackageInventory.FileName));
         var lineage = new ReferenceLineage();
+        var inventory = new PackageInventory { Package = name };
         var projects = new List<ManifestProject>();
         foreach (string project in projectNames)
         {
-            var collected = CollectProject(project, deployDirectory, previous, report, ct);
+            var listed = new InventoryProject { Name = project };
+            inventory.Projects.Add(listed);
+            var collected = CollectProject(project, deployDirectory, previous, listed, previousInventory?.Find(project), report, ct);
             string? previousPublisher = FindPublisher(previousLineage, project);
             if (collected.Files.Count == 0 && collected.Deleted.Count == 0)
             {
@@ -184,8 +188,16 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
             }
         }
 
-        return new ChangeSet(projects, lineage);
+        foreach (string directory in CarriedDirectories(previous))
+        {
+            inventory.Projects.Add(CarriedInventory(directory, previousInventory, ct));
+        }
+
+        return new ChangeSet(projects, lineage, inventory);
     }
+
+    public static void WriteInventory(string deployDirectory, PackageInventory inventory) =>
+        PackageJson.WriteInventory(Path.Combine(deployDirectory, PackageInventory.FileName), inventory);
 
     public static string PrepareManifest(string workDirectory, PackageManifest manifest)
     {
@@ -198,7 +210,8 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
     public static void PlaceManifest(string preparedManifest, string deployDirectory) =>
         File.Move(preparedManifest, Path.Combine(deployDirectory, PackageManifest.FileName), overwrite: true);
 
-    public ArchiveInfo CreateArchive(string archive, string? previous, ReferenceLineage lineage, Action<string> report, CancellationToken ct)
+    public ArchiveInfo CreateArchive(
+        string archive, string? previous, ReferenceLineage lineage, PackageInventory inventory, Action<string> report, CancellationToken ct)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(archive)!);
         File.Delete(archive);
@@ -211,26 +224,22 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
                 total += AddProject(zip, project, PublishedProjectDirectory(project), report, ct);
             }
 
-            if (previous is not null)
+            foreach (string directory in CarriedDirectories(previous))
             {
-                foreach (string directory in Directory.EnumerateDirectories(previous))
-                {
-                    string project = Path.GetFileName(directory);
-                    if (string.Equals(project, LegacyChangesDirectoryName, StringComparison.OrdinalIgnoreCase)
-                        || projectNames.Contains(project, StringComparer.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    int count = AddProject(zip, project, directory, _ => { }, ct);
-                    report($"{project}: {count} files carried over from the previous publish");
-                    total += count;
-                    carried.Add(project);
-                }
+                string project = Path.GetFileName(directory);
+                int count = AddProject(zip, project, directory, _ => { }, ct);
+                report($"{project}: {count} files carried over from the previous publish");
+                total += count;
+                carried.Add(project);
             }
 
-            using var lineageStream = zip.CreateEntry(ReferenceLineage.FileName, ArchiveCompression).Open();
-            PackageJson.WriteLineage(lineageStream, lineage);
+            using (var lineageStream = zip.CreateEntry(ReferenceLineage.FileName, ArchiveCompression).Open())
+            {
+                PackageJson.WriteLineage(lineageStream, lineage);
+            }
+
+            using var inventoryStream = zip.CreateEntry(PackageInventory.FileName, ArchiveCompression).Open();
+            PackageJson.WriteInventory(inventoryStream, inventory);
         }
 
         return new ArchiveInfo(archive, total, new FileInfo(archive).Length, carried);
@@ -288,15 +297,67 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
 
     public readonly record struct ArchiveInfo(string Path, int Files, long Size, IReadOnlyList<string> Carried);
 
-    public sealed record ChangeSet(IReadOnlyList<ManifestProject> Projects, ReferenceLineage Lineage)
+    public sealed record ChangeSet(IReadOnlyList<ManifestProject> Projects, ReferenceLineage Lineage, PackageInventory Inventory)
     {
         public int Changed => Projects.Sum(p => p.Files.Count);
 
         public int Deleted => Projects.Sum(p => p.Deleted.Count);
     }
 
-    private ManifestProject CollectProject(string project, string deployDirectory, string? previous, Action<string> report, CancellationToken ct)
+    private IEnumerable<string> CarriedDirectories(string? previous) =>
+        previous is null
+            ? []
+            : Directory.EnumerateDirectories(previous).Where(directory =>
+            {
+                string project = Path.GetFileName(directory);
+                return !string.Equals(project, LegacyChangesDirectoryName, StringComparison.OrdinalIgnoreCase)
+                    && !projectNames.Contains(project, StringComparer.OrdinalIgnoreCase);
+            });
+
+    private static InventoryProject CarriedInventory(string directory, PackageInventory? previousInventory, CancellationToken ct)
     {
+        string project = Path.GetFileName(directory);
+        if (previousInventory?.Find(project) is { } known)
+        {
+            return new InventoryProject { Name = project, Files = [.. known.Files] };
+        }
+
+        var listed = new InventoryProject { Name = project };
+        foreach (string file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested();
+            listed.Files.Add(new InventoryFile
+            {
+                Path = PackagePaths.ToManifest(Path.GetRelativePath(directory, file)),
+                Size = new FileInfo(file).Length,
+                Sha256 = FileHashing.Sha256(file)
+            });
+        }
+
+        return listed;
+    }
+
+    private static Dictionary<string, string> KnownHashes(InventoryProject? previousInventory)
+    {
+        var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in previousInventory?.Files ?? [])
+        {
+            hashes[file.Path] = file.Sha256;
+        }
+
+        return hashes;
+    }
+
+    private ManifestProject CollectProject(
+        string project,
+        string deployDirectory,
+        string? previous,
+        InventoryProject listed,
+        InventoryProject? previousInventory,
+        Action<string> report,
+        CancellationToken ct)
+    {
+        var knownHashes = KnownHashes(previousInventory);
         string source = PublishedProjectDirectory(project);
         string? previousProject = previous is not null && Directory.Exists(Path.Combine(previous, project))
             ? Path.Combine(previous, project)
@@ -307,22 +368,31 @@ public sealed class DeployPreparer(string sharedRoot, string deployRoot, string 
         {
             ct.ThrowIfCancellationRequested();
             string relative = Path.GetRelativePath(source, file);
+            string manifestPath = PackagePaths.ToManifest(relative);
             current.Add(relative);
             string? previousFile = PreviousFile(previousProject, relative);
             if (previousFile is not null && FilesAreEqual(file, previousFile))
             {
+                listed.Files.Add(new InventoryFile
+                {
+                    Path = manifestPath,
+                    Size = new FileInfo(file).Length,
+                    Sha256 = knownHashes.GetValueOrDefault(manifestPath) ?? FileHashing.Sha256(file)
+                });
                 continue;
             }
 
             string destination = Path.Combine(deployDirectory, project, relative);
             CopyFile(file, destination);
-            collected.Files.Add(new ManifestFile
+            var changed = new ManifestFile
             {
-                Path = PackagePaths.ToManifest(relative),
+                Path = manifestPath,
                 Size = new FileInfo(destination).Length,
                 Sha256 = FileHashing.Sha256(destination),
                 PreviousSha256 = previousFile is null ? null : FileHashing.Sha256(previousFile)
-            });
+            };
+            collected.Files.Add(changed);
+            listed.Files.Add(new InventoryFile { Path = changed.Path, Size = changed.Size, Sha256 = changed.Sha256 });
             report(Path.Combine(project, relative));
         }
 

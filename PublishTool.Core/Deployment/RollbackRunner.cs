@@ -45,7 +45,7 @@ public sealed class RollbackRunner
             return warnings;
         }
 
-        foreach (var target in journal.Targets)
+        foreach (var target in journal.Targets.Where(t => !t.CleanOnly))
         {
             string? current = config.RecordFor(target.Path)?.Package;
             if (!string.Equals(current, journal.Package, StringComparison.OrdinalIgnoreCase))
@@ -154,7 +154,7 @@ public sealed class RollbackRunner
         _recordRow.Start();
         try
         {
-            foreach (var target in _journal.Targets)
+            foreach (var target in _journal.Targets.Where(t => !t.CleanOnly))
             {
                 _config.SetRecord(target.Path, target.Previous);
             }

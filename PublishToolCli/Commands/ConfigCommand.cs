@@ -36,7 +36,8 @@ public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigComman
 
         if (Options.ChangesTargets)
         {
-            throw new CliArgumentException("--target, --service, --remove-target, --skip and --remove-skip need --prefix <package prefix>");
+            throw new CliArgumentException(
+                "--target, --service, --remove-target, --skip, --remove-skip, --keep and --remove-keep need --prefix <package prefix>");
         }
 
         return RunDirectory(output, result);
@@ -162,7 +163,8 @@ public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigComman
 
         foreach (var (project, target) in targets.OrderBy(t => t.Key, StringComparer.OrdinalIgnoreCase))
         {
-            output.Line($"  {project}: {target.Path ?? NotSet}, {(target.ServiceName is null ? "IIS" : $"service {target.ServiceName}")}");
+            output.Line($"  {project}: {target.Path ?? NotSet}, {(target.ServiceName is null ? "IIS" : $"service {target.ServiceName}")}"
+                + (target.Keep.Count == 0 ? string.Empty : $", clean keeps {string.Join(", ", target.Keep)}"));
         }
 
         foreach (string project in result.Skipped.Order(StringComparer.OrdinalIgnoreCase))
@@ -204,6 +206,15 @@ public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigComman
             environment.Unskip(key);
             environment.Targets[key] = target;
         }
+
+        foreach (var (project, pattern) in Options.RemoveKeep)
+        {
+            var target = environment.TargetFor(project) ?? throw new CliArgumentException($"{project} has no target");
+            if (!target.RemoveKeep(pattern))
+            {
+                throw new CliArgumentException($"{project} has no keep pattern '{pattern}'");
+            }
+        }
     }
 
     private void CheckSkipConflicts(DeployEnvironment environment)
@@ -220,7 +231,7 @@ public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigComman
         }
     }
 
-    private static DeployTarget Merge(DeployTarget? stored, string project, TargetOverride change)
+    internal static DeployTarget Merge(DeployTarget? stored, string project, TargetOverride change)
     {
         string? path = change.Path ?? stored?.Path;
         if (path is null)
@@ -234,6 +245,11 @@ public class ConfigCommand(ConfigCommandOptions options) : ICommand<ConfigComman
             throw new CliArgumentException($"The Windows service {service} does not exist on this machine");
         }
 
-        return new DeployTarget { Path = path, ServiceName = service };
+        return new DeployTarget
+        {
+            Path = path,
+            ServiceName = service,
+            Keep = [.. (stored?.Keep ?? []).Union(change.Keep, StringComparer.OrdinalIgnoreCase)]
+        };
     }
 }

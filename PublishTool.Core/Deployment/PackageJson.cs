@@ -45,6 +45,32 @@ public static class PackageJson
     public static void WriteLineage(Stream stream, ReferenceLineage lineage) =>
         JsonSerializer.Serialize(stream, lineage, JsonContext.Default.ReferenceLineage);
 
+    public static PackageInventory ReadInventory(string path) =>
+        Read(path, PackageInventory.CurrentFormat, "package inventory", JsonContext.Default.PackageInventory);
+
+    public static PackageInventory? TryReadInventory(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return ReadInventory(path);
+        }
+        catch (DeployException e)
+        {
+            Logger.LogWarning($"The inventory of the previous reference is ignored: {e.Message}");
+            return null;
+        }
+    }
+
+    public static void WriteInventory(string path, PackageInventory inventory) => Write(path, inventory, JsonContext.Default.PackageInventory);
+
+    public static void WriteInventory(Stream stream, PackageInventory inventory) =>
+        JsonSerializer.Serialize(stream, inventory, JsonContext.Default.PackageInventory);
+
     private static T Read<T>(string path, int currentFormat, string kind, JsonTypeInfo<T> typeInfo) where T : class
     {
         try

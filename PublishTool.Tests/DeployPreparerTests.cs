@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using PublishTool.Deployment;
 using PublishTool.Tests.Support;
 
 namespace PublishTool.Tests;
@@ -18,7 +19,7 @@ public class DeployPreparerTests
         temp.Write("publish/Api/Api.dll", "api v1");
         var preparer = Preparer(temp, "Web", "Api");
         var changes = preparer.CollectChanges(preparer.DeployPath(FirstName), null, FirstName, _ => { }, CancellationToken.None);
-        var archive = preparer.CreateArchive(preparer.ArchivePath(FirstName), null, changes.Lineage, _ => { }, CancellationToken.None);
+        var archive = preparer.CreateArchive(preparer.ArchivePath(FirstName), null, changes.Lineage, changes.Inventory, _ => { }, CancellationToken.None);
         string uploading = DeployPreparer.Upload(archive.Path, preparer.ReferencePath(FirstName), _ => { }, CancellationToken.None);
         DeployPreparer.Commit(uploading, preparer.ReferencePath(FirstName));
     }
@@ -54,7 +55,7 @@ public class DeployPreparerTests
         var (previous, _) = DeployPreparer.Download(reference, preparer.WorkPath(SecondName), _ => { }, CancellationToken.None);
 
         var changes = preparer.CollectChanges(preparer.DeployPath(SecondName), previous, SecondName, _ => { }, CancellationToken.None);
-        var archive = preparer.CreateArchive(preparer.ArchivePath(SecondName), previous, changes.Lineage, _ => { }, CancellationToken.None);
+        var archive = preparer.CreateArchive(preparer.ArchivePath(SecondName), previous, changes.Lineage, changes.Inventory, _ => { }, CancellationToken.None);
 
         var web = Assert.Single(changes.Projects);
         Assert.False(web.IsFullPublish);
@@ -72,6 +73,68 @@ public class DeployPreparerTests
         using var zip = ZipFile.OpenRead(archive.Path);
         Assert.Contains(zip.Entries, e => e.FullName == "Api/Api.dll");
         Assert.Contains(zip.Entries, e => e.FullName == "publishtool-lineage.json");
+    }
+
+    [Fact]
+    public void CollectChanges_ListsEveryPublishedFileInTheInventory()
+    {
+        using var temp = new TempDirectory();
+        temp.Write("publish/Web/App.dll", "app");
+        temp.Write("publish/Web/bin/Lib.dll", "lib");
+        var preparer = Preparer(temp, "Web");
+
+        var changes = preparer.CollectChanges(preparer.DeployPath(FirstName), null, FirstName, _ => { }, CancellationToken.None);
+        DeployPreparer.WriteInventory(preparer.DeployPath(FirstName), changes.Inventory);
+
+        Assert.Equal(FirstName, changes.Inventory.Package);
+        var web = Assert.Single(changes.Inventory.Projects);
+        Assert.Equal(["App.dll", "bin/Lib.dll"], web.Files.Select(f => f.Path).Order(StringComparer.Ordinal));
+        var lib = web.Files.Single(f => f.Path == "bin/Lib.dll");
+        Assert.Equal(3, lib.Size);
+        Assert.Equal(PackageBuilder.Sha256Of("lib"), lib.Sha256);
+        var written = PackageJson.ReadInventory(temp.Combine("deploy", FirstName, PackageInventory.FileName));
+        Assert.Equal(2, Assert.Single(written.Projects).Files.Count);
+    }
+
+    [Fact]
+    public void CollectChanges_WithPrevious_ListsUnchangedAndCarriedProjectsAndReusesKnownHashes()
+    {
+        using var temp = new TempDirectory();
+        PublishFirst(temp);
+        temp.Write("publish/Web/App.dll", "app v2");
+        var preparer = Preparer(temp, "Web");
+        string reference = Assert.IsType<string>(preparer.FindPreviousReference("uat"));
+        var (previous, _) = DeployPreparer.Download(reference, preparer.WorkPath(SecondName), _ => { }, CancellationToken.None);
+        string previousInventoryPath = Path.Combine(previous, PackageInventory.FileName);
+        var previousInventory = PackageJson.ReadInventory(previousInventoryPath);
+        previousInventory.Find("Web")!.Files.Single(f => f.Path == "Old.dll").Sha256 = "known";
+        PackageJson.WriteInventory(previousInventoryPath, previousInventory);
+
+        var changes = preparer.CollectChanges(preparer.DeployPath(SecondName), previous, SecondName, _ => { }, CancellationToken.None);
+        var archive = preparer.CreateArchive(preparer.ArchivePath(SecondName), previous, changes.Lineage, changes.Inventory, _ => { }, CancellationToken.None);
+
+        var web = Assert.IsType<InventoryProject>(changes.Inventory.Find("web"));
+        Assert.Equal(PackageBuilder.Sha256Of("app v2"), web.Files.Single(f => f.Path == "App.dll").Sha256);
+        Assert.Equal("known", web.Files.Single(f => f.Path == "Old.dll").Sha256);
+        var api = Assert.IsType<InventoryProject>(changes.Inventory.Find("Api"));
+        Assert.Equal(PackageBuilder.Sha256Of("api v1"), Assert.Single(api.Files).Sha256);
+        using var zip = ZipFile.OpenRead(archive.Path);
+        Assert.Contains(zip.Entries, e => e.FullName == PackageInventory.FileName);
+    }
+
+    [Fact]
+    public void CollectChanges_UnchangedProject_IsInTheInventoryButNotInTheManifest()
+    {
+        using var temp = new TempDirectory();
+        PublishFirst(temp);
+        var preparer = Preparer(temp, "Web", "Api");
+        string reference = Assert.IsType<string>(preparer.FindPreviousReference("uat"));
+        var (previous, _) = DeployPreparer.Download(reference, preparer.WorkPath(SecondName), _ => { }, CancellationToken.None);
+
+        var changes = preparer.CollectChanges(preparer.DeployPath(SecondName), previous, SecondName, _ => { }, CancellationToken.None);
+
+        Assert.Empty(changes.Projects);
+        Assert.Equal(["Api", "Web"], changes.Inventory.Projects.Select(p => p.Name).Order(StringComparer.Ordinal));
     }
 
     [Fact]

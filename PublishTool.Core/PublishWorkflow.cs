@@ -242,6 +242,7 @@ public sealed class PublishWorkflow
                 PreviousReference = previousReference is null ? null : Path.GetFileName(previousReference),
                 Projects = [.. changes.Projects]
             });
+            DeployPreparer.WriteInventory(packageDirectory, changes.Inventory);
             changesRow.Finish(StepState.Succeeded, $"{changes.Changed} files changed, {changes.Deleted} deleted");
             deployDirectory = null;
             _result.Projects.AddRange(changes.Projects.Select(p => new PublishedProject(p.Name, p.Files.Count, p.Deleted.Count, p.IsFullPublish, p.Base)));
@@ -249,7 +250,7 @@ public sealed class PublishWorkflow
             string archive = preparer.ArchivePath(name);
             archiveRow.Name = $"Compressing the full publish into {archive}";
             archiveRow.Start();
-            var archiveInfo = await Task.Run(() => preparer.CreateArchive(archive, previous, changes.Lineage, archiveRow.AppendLine, ct), ct);
+            var archiveInfo = await Task.Run(() => preparer.CreateArchive(archive, previous, changes.Lineage, changes.Inventory, archiveRow.AppendLine, ct), ct);
             _result.Carried.AddRange(archiveInfo.Carried);
             archiveRow.Finish(StepState.Succeeded, archiveInfo.Carried.Count == 0
                 ? $"{archiveInfo.Files} files, {DeployPreparer.FormatSize(archiveInfo.Size)}"

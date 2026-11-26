@@ -23,6 +23,11 @@ public static class WarningCodes
     public const string TargetModified = "target-modified";
     public const string NewerDeploy = "newer-deploy";
     public const string Downgrade = "downgrade";
+    public const string CleanDelete = "clean-delete";
+    public const string CleanMismatch = "clean-mismatch";
+    public const string CleanMissing = "clean-missing";
+
+    public static readonly IReadOnlyList<string> Clean = [CleanDelete, CleanMismatch, CleanMissing];
 
     public static readonly IReadOnlyList<string> All =
     [
@@ -36,8 +41,13 @@ public static class WarningCodes
         ConfigChanged,
         TargetModified,
         NewerDeploy,
-        Downgrade
+        Downgrade,
+        CleanDelete,
+        CleanMismatch,
+        CleanMissing
     ];
+
+    public static bool IsClean(string code) => Clean.Contains(code, StringComparer.OrdinalIgnoreCase);
 
     public static bool IsKnown(string code) => All.Contains(code, StringComparer.OrdinalIgnoreCase);
 

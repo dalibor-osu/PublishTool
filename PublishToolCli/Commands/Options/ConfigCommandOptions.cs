@@ -56,6 +56,16 @@ public class ConfigCommandOptions
         Description = "With --prefix: comma separated projects that are deployed on this server again (--target also does this); repeatable")]
     public List<string> RemoveSkip { get; set; } = [];
 
+    [Option("--keep", Parser = nameof(ParseKeep), ValueName = "project=pattern",
+        Description = "With --prefix: add a pattern of files or directories that deploy --clean never deletes or compares in the target of a "
+        + "project (Web=logs/**, Web=*.log); a pattern with / is relative to the target directory, one without matches the name at any depth; "
+        + "repeat for more patterns")]
+    public Dictionary<string, TargetOverride> Keep => Targets;
+
+    [Option("--remove-keep", Parser = nameof(ParseRemoveKeep), ValueName = "project=pattern",
+        Description = "With --prefix: remove a keep pattern of a project; repeat for more patterns")]
+    public List<KeyValuePair<string, string>> RemoveKeep { get; set; } = [];
+
     [Option("--json", Description = "Print one JSON result object on stdout")]
     public bool Json { get; set; } = false;
 
@@ -63,7 +73,8 @@ public class ConfigCommandOptions
         PublishDirectory is not null || SharedDirectory is not null || DeployDirectory is not null || IgnoredDirectories is not null
         || PublishableProjects is not null || Unset.Count > 0;
 
-    public bool ChangesTargets => Targets.Count > 0 || RemoveTargets.Count > 0 || Skip.Count > 0 || RemoveSkip.Count > 0;
+    public bool ChangesTargets =>
+        Targets.Count > 0 || RemoveTargets.Count > 0 || Skip.Count > 0 || RemoveSkip.Count > 0 || RemoveKeep.Count > 0;
 
     internal static bool ParseWorkingDirectory(string value, ConfigCommandOptions options, out string? error)
     {
@@ -144,4 +155,10 @@ public class ConfigCommandOptions
 
     internal static bool ParseRemoveSkip(string value, ConfigCommandOptions options, out string? error) =>
         OptionValues.TryAddProjects(value, "--remove-skip", options.RemoveSkip, out error);
+
+    internal static bool ParseKeep(string value, ConfigCommandOptions options, out string? error) =>
+        OptionValues.TryAddKeep(value, options.Targets, out error);
+
+    internal static bool ParseRemoveKeep(string value, ConfigCommandOptions options, out string? error) =>
+        OptionValues.TryAddRemovedKeep(value, options.RemoveKeep, out error);
 }

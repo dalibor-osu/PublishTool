@@ -44,6 +44,29 @@ public class CliParsingTests
     }
 
     [Fact]
+    public void Deploy_ParsesCleanAndRepeatedKeepPatterns()
+    {
+        var command = Assert.IsType<DeployCommand>(
+            CommandParsers.TryParse(["deploy", "--clean", "--keep", @"Web=logs\**", "--keep", "web=*.log", "--accept", "clean-delete"])!.Value);
+
+        Assert.True(command.Options.Clean);
+        Assert.Equal(["logs/**", "*.log"], command.Options.Targets["Web"].Keep);
+        Assert.Null(command.Options.Targets["Web"].Path);
+        Assert.Equal([WarningCodes.CleanDelete], command.Options.Accept);
+    }
+
+    [Fact]
+    public void Config_KeepAndRemoveKeep_ChangeTargets()
+    {
+        var command = Assert.IsType<ConfigCommand>(
+            CommandParsers.TryParse(["config", "--prefix", "uat", "--keep", "Web=App_Data", "--remove-keep", "Api=logs/"])!.Value);
+
+        Assert.Equal(["App_Data"], command.Options.Targets["Web"].Keep);
+        Assert.Equal([new KeyValuePair<string, string>("Api", "logs")], command.Options.RemoveKeep);
+        Assert.True(command.Options.ChangesTargets);
+    }
+
+    [Fact]
     public void Deploy_YesWithDryRun_DoesNotExecute()
     {
         var command = Assert.IsType<DeployCommand>(CommandParsers.TryParse(["deploy", "--yes", "--dry-run"])!.Value);
@@ -57,6 +80,10 @@ public class CliParsingTests
     [InlineData("publish", "-c", "Fast", "Unknown configuration")]
     [InlineData("config", "--unset", "colour", "Unknown setting")]
     [InlineData("deploy", "--skip", " , ", "needs a project name")]
+    [InlineData("deploy", "--keep", "logs/**", "expects <project>=<pattern>")]
+    [InlineData("deploy", "--keep", @"Web=..\other", "must not contain")]
+    [InlineData("config", "--keep", @"Web=C:\sites\web\logs", "relative to the target directory")]
+    [InlineData("config", "--remove-keep", "Web=", "must not be empty")]
     public void InvalidValues_AreParseErrors(string command, string option, string value, string expected)
     {
         var parsed = CommandParsers.TryParse([command, option, value]);
